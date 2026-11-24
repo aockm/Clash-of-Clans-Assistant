@@ -6,6 +6,7 @@ device:
   device_serial: null  # null 表示自动选择第一个设备
   video_width: 720
   video_height: 1280
+  scrcpy_server_path: "assets/scrcpy-server-v2.1"  # scrcpy-server.jar 本地路径
 
 # 视觉配置
 vision:
@@ -56,38 +57,29 @@ attacker:
 deployer:
   deploy_zone_padding: 20
   hero_ability_delay: [4.0, 6.0]
-  
-  # 兵种配置
-  troops:
-    - name: "野蛮人"
-      template: "troop_barbarian"
-      count: 20
-      pattern: "edge"
-    
-    - name: "弓箭手"
-      template: "troop_archer"
-      count: 10
-      pattern: "edge"
-    
-    - name: "巨人"
-      template: "troop_giant"
-      count: 5
-      pattern: "corner"
-  
-  # 英雄配置
-  heroes:
-    - name: "野蛮人之王"
-      template: "hero_barbarian_king"
-      activate_delay: 5.0
-    
-    - name: "弓箭女皇"
-      template: "hero_archer_queen"
-      activate_delay: 5.0
+  # 兵种按战斗画面底部兵种栏槽位动态检测并全部部署，无需配置模板
+  # 英雄如需技能模板可在此配置（未配置时英雄随兵种栏一并动态部署）
+  heroes: []
+
+# 攻击/自动配兵配置
+attacker:
+  army:
+    # 默认不配置：军队页面直接点"进攻"，沿用游戏记忆配好的兵
+    # 仅当需要特定兵种组合时，取消下方注释启用自动配兵（清空部队→按序添加→进攻）
+    # 注意：兵种必须已在兵营训练，否则清空后部队为空无法进攻
+    troops: []
+    # troops:
+    #   - name: "野蛮人"
+    #     template: "pick_barbarian"
+    #   - name: "弓箭手"
+    #     template: "pick_archer"
+    #   - name: "女武神"
+    #     template: "pick_valkyrie"
 
 # 安全配置
 safety:
   # 点击随机化
-  click_offset: 15  # 像素
+  click_offset: 5  # 像素（作用于视频坐标，勿设太大以免小目标点击打偏）
   
   # 延迟随机化
   delay_range: [0.3, 0.8]

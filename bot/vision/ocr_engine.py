@@ -122,6 +122,40 @@ class OCREngine:
         # 执行 OCR
         return self._execute_ocr(processed, config, parse_digits=True, allow_suffix=allow_suffix)
     
+    def recognize_badge_count(
+        self,
+        frame: np.ndarray,
+        roi: Tuple[int, int, int, int]
+    ) -> Optional[int]:
+        """
+        识别兵种卡数量角标（深色底白字小数字）
+
+        Args:
+            frame: 输入帧（BGR）
+            roi: 角标区域 (x, y, width, height)
+
+        Returns:
+            识别到的数量，无数字返回 None
+        """
+        if not TESSERACT_AVAILABLE:
+            return None
+        x, y, w, h = roi
+        img = frame[y:y+h, x:x+w]
+        if img.size == 0:
+            return None
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        big = cv2.resize(gray, (w * 4, h * 4), interpolation=cv2.INTER_CUBIC)
+        _, binary = cv2.threshold(big, 160, 255, cv2.THRESH_BINARY)
+        try:
+            text = pytesseract.image_to_string(
+                binary,
+                config="--psm 7 -c tessedit_char_whitelist=0123456789"
+            ).strip()
+        except Exception as e:
+            logger.debug(f"角标识别失败: {e}")
+            return None
+        return int(text) if text.isdigit() else None
+
     def recognize_text(
         self,
         frame: np.ndarray,

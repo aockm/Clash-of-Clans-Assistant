@@ -272,6 +272,9 @@ def create_default_state_graph() -> StateGraph:
     # 攻击菜单
     graph.add_edge(GameState.ATTACK_MENU, GameState.ATTACK_SEARCH, "点击寻找对手")
     graph.add_edge(GameState.ATTACK_MENU, GameState.MAIN_VILLAGE, "点击返回")
+    graph.add_edge(GameState.ATTACK_SEARCH, GameState.MY_ARMY, "配兵界面出现")
+    graph.add_edge(GameState.MY_ARMY, GameState.ENEMY_BASE, "点击进攻")
+    graph.add_edge(GameState.MY_ARMY, GameState.ATTACK_MENU, "点击关闭")
     
     # 搜索对手
     graph.add_edge(GameState.ATTACK_SEARCH, GameState.ENEMY_BASE, "找到对手")

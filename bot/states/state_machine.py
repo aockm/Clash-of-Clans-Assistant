@@ -34,6 +34,7 @@ class GameState(Enum):
     # 战斗相关
     ATTACK_MENU = auto()            # 攻击菜单（搜索对手）
     ATTACK_SEARCH = auto()          # 正在搜索对手
+    MY_ARMY = auto()                # 我的军队（配兵/进攻页面）
     ENEMY_BASE = auto()             # 敌方基地（战斗画面）
     BATTLE_RESULTS = auto()         # 战斗结算界面
     

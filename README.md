@@ -44,16 +44,56 @@ An automated assistant for Clash of Clans based on ADB and computer vision, requ
 6. 可配置 - YAML 配置文件，灵活调整参数
 ### 🚀 使用方式
 
+#### 1. 环境准备
+
+- Python 3.10+
+- 安装系统依赖：
+  - `adb`（Android Platform Tools）
+  - `tesseract-ocr`（OCR 引擎，macOS 可用 `brew install tesseract`）
+- scrcpy 仅需 server 端（项目直接通过 adb 推送并运行，无需安装 scrcpy 客户端），已下载至 `assets/scrcpy-server-v2.1`
+- 安装 Python 依赖：
+
 ```
-# 基本启动
+pip install -r requirements.txt
+```
+
+#### 2. 配置
+
+- 根据实际设备调整 `config/bot.yaml`
+- 在 `assets/templates/` 目录下放置游戏 UI 元素的模板截图
+- scrcpy 采集配置：`config/bot.yaml` 的 `device.scrcpy_server_path` 指向本地 server jar（默认 `assets/scrcpy-server-v2.1`），也可用命令行 `--scrcpy-server` 覆盖（优先级更高）
+
+采集机制：启动时自动推送 jar 到设备并通过 `adb reverse` 建立反向隧道拉取 H.264 视频流；若 scrcpy 会话启动失败，自动降级为 `adb exec-out screencap` 截图采集。
+
+#### 3. 启动
+
+连接设备后运行：
+
+```
+# 基本启动（自动选择设备，读取 config/bot.yaml）
 python main.py
 
-# 指定设备和模板
-python main.py --device ABC123 --templates assets/templates
+# 指定 ADB 路径、设备和模板目录
+python main.py --adb /path/to/adb --device ABC123 --templates assets/templates
 
-# 调试模式
+# 指定配置文件或 scrcpy-server 路径
+python main.py --config config/bot.yaml --scrcpy-server assets/scrcpy-server-v2.1
+
+# 调试模式（DEBUG 日志输出到 logs/bot.log）
 python main.py --log-level DEBUG
 ```
+
+#### 4. 运行测试
+
+```
+# 单元测试（无需连接设备，使用 mock）
+PYTHONPATH=. python3 tests/test_capture.py
+PYTHONPATH=. python3 tests/test_vision.py
+PYTHONPATH=. python3 tests/test_states.py
+PYTHONPATH=. python3 tests/test_features.py
+```
+
+> 注：测试文件内的路径处理为 Windows 写法，macOS/Linux 下需显式设置 `PYTHONPATH=.`。
 ### 📝 下一步建议
 1. 添加模板图片 - 在 assets/templates/ 目录下添加游戏 UI 元素的截图
 2. 配置设备参数 - 根据实际设备调整 config/bot.yaml

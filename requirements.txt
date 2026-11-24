@@ -1,0 +1,5 @@
+numpy>=1.24
+opencv-python>=4.8
+pytesseract>=0.3.10
+av>=10.0
+PyYAML>=6.0

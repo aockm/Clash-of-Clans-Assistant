@@ -67,6 +67,11 @@ def main():
         help="配置文件路径"
     )
     parser.add_argument(
+        "--scrcpy-server",
+        default=None,
+        help="scrcpy-server.jar 路径（默认读取配置文件 device.scrcpy_server_path）"
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -91,6 +96,27 @@ def main():
     logger.info("Clash of Clans Assistant 启动")
     logger.info("=" * 60)
     
+    # 读取配置文件中的设备与安全参数
+    device_cfg = {}
+    safety_cfg = {}
+    deployer_cfg = {}
+    attacker_cfg = {}
+    config_path = Path(args.config)
+    if config_path.exists():
+        try:
+            import yaml
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            device_cfg = cfg.get("device", {}) or {}
+            safety_cfg = cfg.get("safety", {}) or {}
+            deployer_cfg = cfg.get("deployer", {}) or {}
+            attacker_cfg = cfg.get("attacker", {}) or {}
+        except Exception as e:
+            logger.warning(f"读取配置文件失败: {e}")
+    
+    scrcpy_server_path = args.scrcpy_server or device_cfg.get("scrcpy_server_path")
+    click_offset = safety_cfg.get("click_offset")
+    
     # 创建调度器
     config = OrchestratorConfig()
     orchestrator = Orchestrator(config)
@@ -100,7 +126,11 @@ def main():
     if not orchestrator.initialize(
         adb_path=args.adb,
         device_serial=args.device,
-        templates_dir=args.templates
+        templates_dir=args.templates,
+        scrcpy_server_path=scrcpy_server_path,
+        click_offset=click_offset,
+        deploy_config=deployer_cfg,
+        attacker_config=attacker_cfg
     ):
         logger.error("初始化失败，程序退出")
         return 1

@@ -79,6 +79,10 @@ class AttackSearcher:
         self._search_count = 0
         self._skip_count = 0
         self._attack_count = 0
+        self._last_search_ts = 0.0  # 上次发起搜索的时间戳
+        self._transition_until = 0.0  # 界面切换宽限期截止时间
+        self._army_troops: list = []  # 自动配兵列表 [{name, template}]
+        self._army_step = 0  # 配兵流程步骤（0=未进行）
         
         # 配置
         self.action_delay = (0.5, 1.2)
@@ -115,37 +119,181 @@ class AttackSearcher:
         """
         开始搜索对手
         
-        点击攻击菜单中的"寻找对手"按钮。
+        每帧只执行一步：
+        - 已在攻击页面（找到"寻找对手"按钮）→ 点击开始搜索
+        - 在主村庄 → 点击攻击按钮进入攻击页面
         
         Args:
             frame: 当前帧
             
         Returns:
-            成功开始搜索返回 True
+            已发起对手搜索返回 True
         """
-        if self.sm.current_state != GameState.MAIN_VILLAGE:
-            logger.warning(f"当前状态不是主村庄: {self.sm.current_state.name}")
+        # 攻击页面：点击"寻找对手"
+        find_btn = self.matcher.match(frame, "find_match_button", threshold=0.7)
+        if find_btn.found:
+            # 搜索进行中/界面切换中，冷却期内不重复点击
+            if time.time() - self._last_search_ts < 90:
+                return False
+            self._army_step = 0  # 新一轮进攻，重置上一轮配兵残留状态
+            if self.click(*find_btn.center):
+                logger.info("开始搜索对手")
+                self._search_count += 1
+                self._last_search_ts = time.time()
+                self._transition_until = time.time() + 60  # 匹配+加载宽限期
+                time.sleep(3.0)  # 等待匹配界面出现
+                return True
             return False
         
-        # 查找攻击按钮
+        # 主村庄：点击攻击按钮进入攻击页面
         attack_btn = self.matcher.match(frame, "attack_button", threshold=0.8)
         if not attack_btn.found:
             logger.warning("未找到攻击按钮")
             return False
         
-        # 点击攻击按钮
         if self.click(*attack_btn.center):
-            logger.info("点击攻击按钮")
-            time.sleep(random.uniform(*self.action_delay))
-            
-            # 查找"寻找对手"按钮
-            find_btn = self.matcher.match(frame, "find_match_button", threshold=0.8)
-            if find_btn.found:
-                if self.click(*find_btn.center):
-                    logger.info("开始搜索对手")
-                    self._search_count += 1
-                    return True
+            logger.info("点击攻击按钮，进入攻击页面")
+            time.sleep(2.0)  # 等待菜单打开动画结束
+            return False
         
+        return False
+    
+    def handle_army_page(self, frame: np.ndarray) -> bool:
+        """
+        处理"我的军队"页面（每帧一步）
+        
+        配置了 army.troops 时执行自动配兵：
+        清空部队 → 打开兵种选择 → 逐个点击兵种卡片 → 关闭弹窗 → 进攻
+        未配置时沿用游戏记忆直接点击"进攻!"。
+        
+        Args:
+            frame: 当前帧
+            
+        Returns:
+            已点击进攻返回 True
+        """
+        # 未配置配兵：沿用游戏记忆配好的兵直接进攻
+        if not self._army_troops:
+            if self.in_transition():
+                return False
+            return self._click_attack(frame)
+        
+        if self._army_step == 0:
+            logger.info("自动配兵 [1/4]: 清空现有部队")
+            self.click(705, 83)  # 军队营垃圾桶
+            self._army_step = 1
+            time.sleep(1.2)
+            return False
+        
+        if self._army_step == 1:
+            ok = self.matcher.match(frame, "army_confirm_ok", threshold=0.8)
+            if ok.found:
+                self.click(*ok.center)
+                logger.info("自动配兵 [2/4]: 已确认移除，打开兵种选择")
+                time.sleep(1.2)
+            else:
+                logger.info("自动配兵 [2/4]: 部队已空，打开兵种选择")
+            self.click(500, 122)  # 空白军队栏 → 兵种选择弹窗
+            self._army_step = 2
+            time.sleep(1.5)
+            return False
+        
+        if self._army_step == 2:
+            added = []
+            for troop in self._army_troops:
+                r = self.matcher.match(frame, troop["template"], threshold=0.7)
+                if r.found:
+                    self.click(*r.center)
+                    added.append(troop["name"])
+                    time.sleep(0.4)
+            logger.info(f"自动配兵 [3/4]: 已添加 {added or '无（兵种未训练）'}")
+            self.click(400, 75)  # 点击上方区域关闭弹窗
+            self._army_step = 3
+            time.sleep(1.2)
+            return False
+        
+        # step 3: 弹窗已关，点击进攻（成功后进入 step 4 等待界面切换）
+        if self._army_step == 3:
+            if self.in_transition():
+                return False
+            atk_btn = self.matcher.match(frame, "army_attack_button", threshold=0.7)
+            if not atk_btn.found:
+                # 兵种弹窗可能未关闭遮住进攻按钮，再点上方区域关闭
+                self.click(400, 75)
+                time.sleep(1.0)
+                return False
+            if self.click(*atk_btn.center):
+                logger.info("点击进攻，进入敌方基地")
+                self._attack_count += 1
+                self._transition_until = time.time() + 15
+                self._army_step = 4
+                time.sleep(5.0)
+                return True
+            return False
+        
+        # step 4: 已点进攻，等待界面切换出军队页面
+        if self._army_step == 4:
+            if self.in_transition():
+                return False
+            atk_btn = self.matcher.match(frame, "army_attack_button", threshold=0.8)
+            if atk_btn.found:
+                # 宽限期后仍在军队页：进攻未生效（部队太少），关闭页面回村
+                logger.warning("进攻未生效（可能部队过少），关闭军队页面返回村庄")
+                self.click(705, 27)  # 军队页面右上角 X
+                time.sleep(1.5)
+            self._army_step = 0
+            return False
+        
+        return False
+    
+    def _click_attack(self, frame: np.ndarray) -> bool:
+        """点击"进攻!"进入敌方基地"""
+        atk_btn = self.matcher.match(frame, "army_attack_button", threshold=0.7)
+        if not atk_btn.found:
+            return False
+        
+        if self.click(*atk_btn.center):
+            logger.info("点击进攻，进入敌方基地")
+            self._attack_count += 1
+            self._transition_until = time.time() + 15  # 加载宽限期
+            time.sleep(5.0)
+            return True
+        return False
+    
+    def in_transition(self) -> bool:
+        """攻击流程界面切换宽限期内（加载中），应跳过异常恢复"""
+        return time.time() < self._transition_until
+    
+    def set_army_config(self, troops: list) -> None:
+        """设置自动配兵列表，每项需含 name 和 template"""
+        self._army_troops = [t for t in troops if t.get("template")]
+        if self._army_troops:
+            names = [t.get("name", "?") for t in self._army_troops]
+            logger.info(f"自动配兵已启用: {names}")
+    
+    def in_army_config(self) -> bool:
+        """是否处于自动配兵流程中"""
+        return self._army_step > 0
+    
+    def return_to_village(self, frame: np.ndarray) -> bool:
+        """
+        若当前处于攻击页面，单击屏幕右侧村庄区域返回主村庄
+        
+        Args:
+            frame: 当前帧
+            
+        Returns:
+            执行了返回操作返回 True
+        """
+        find_btn = self.matcher.match(frame, "find_match_button", threshold=0.7)
+        if not find_btn.found:
+            return False
+        
+        h, w = frame.shape[:2]
+        if self.click(int(w * 0.875), int(h * 0.5)):
+            logger.info("单击屏幕右侧，从攻击页面返回村庄")
+            time.sleep(random.uniform(*self.action_delay))
+            return True
         return False
     
     def analyze_enemy(self, frame: np.ndarray) -> EnemyBaseInfo:

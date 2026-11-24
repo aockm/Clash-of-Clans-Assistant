@@ -11,12 +11,22 @@ import logging
 from typing import Optional, List, Tuple, Dict
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from ..states.state_machine import GameState, StateMachine
 from ..vision.template_matcher import TemplateMatcher, MatchResult
 
 logger = logging.getLogger(__name__)
+
+# 收集气泡球体 HSV 颜色范围（视频尺度实测，与 YOLO 标注一致）
+BUBBLE_HSV_RANGES = {
+    "金矿": ((18, 120, 150), (35, 255, 255)),      # 亮黄球
+    "圣水收集器": ((140, 120, 120), (170, 255, 255)),  # 品红球
+    "暗黑重油钻井": ((125, 80, 40), (145, 255, 130)),   # 深紫球
+}
+# 村庄扫描区域（避开顶部/右侧 HUD 资源栏），视频尺度 800x360
+BUBBLE_SCAN_ROI = (150, 55, 600, 300)  # x0, y0, x1, y1
 
 
 @dataclass
@@ -88,11 +98,60 @@ class ResourceCollector:
             self.buildings.append(building)
         logger.info(f"已设置 {len(self.DEFAULT_BUILDINGS)} 个默认资源建筑")
     
+    def detect_bubbles(self, frame: np.ndarray) -> List[Tuple[str, Tuple[int, int]]]:
+        """
+        基于 HSV 颜色 + 形状检测收集气泡
+        
+        气泡球体为极高饱和的纯色圆斑（金币黄/圣水晶红/黑油深紫），
+        圆形度过滤可排除草地、金矿堆等误检。
+        
+        Args:
+            frame: 当前帧（视频尺度）
+            
+        Returns:
+            [(建筑名, (x, y)), ...] 气泡中心位置列表
+        """
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        h, w = hsv.shape[:2]
+        x0, y0, x1, y1 = BUBBLE_SCAN_ROI
+        x1, y1 = min(x1, w), min(y1, h)
+        
+        found: List[Tuple[str, Tuple[int, int]]] = []
+        for name, (lo, hi) in BUBBLE_HSV_RANGES.items():
+            mask = cv2.inRange(hsv, lo, hi)
+            area_mask = np.zeros((h, w), np.uint8)
+            area_mask[y0:y1, x0:x1] = 255
+            mask = cv2.bitwise_and(mask, mask, mask=area_mask)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            
+            n, labels, stats, cents = cv2.connectedComponentsWithStats(mask)
+            for i in range(1, n):
+                area = stats[i, cv2.CC_STAT_AREA]
+                if area < 40:
+                    continue
+                bw, bh = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+                if bh == 0 or not (0.5 <= bw / bh <= 2.0):
+                    continue
+                blob = (labels == i).astype(np.uint8)
+                cnt = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0][0]
+                perim = cv2.arcLength(cnt, True)
+                circularity = 4 * np.pi * area / (perim ** 2 + 1e-6)
+                if circularity < 0.7:
+                    continue
+                # 球体核心应有大量极饱和像素（草地/土路没有）
+                if (hsv[:, :, 1][labels == i] >= 240).mean() < 0.05:
+                    continue
+                cx, cy = int(cents[i][0]), int(cents[i][1])
+                found.append((name, (cx, cy)))
+                logger.debug(f"发现收集气泡: {name} at ({cx},{cy}) area={area}")
+        
+        return found
+    
     def collect(self, frame: np.ndarray) -> int:
         """
         执行资源收集
         
-        在帧中检测所有资源建筑的收集气泡并点击。
+        在帧中检测所有收集气泡并点击。
         
         Args:
             frame: 当前帧
@@ -110,32 +169,23 @@ class ResourceCollector:
             logger.debug("收集间隔未到")
             return 0
         
+        bubbles = self.detect_bubbles(frame)
         collected = 0
         
-        # 检测并点击收集气泡
-        for building in self.buildings:
-            if building.collect_template:
-                result = self.matcher.match(
-                    frame, 
-                    building.collect_template,
-                    threshold=0.7
-                )
+        for name, (cx, cy) in bubbles:
+            if self.click(cx, cy):
+                collected += 1
+                self._collect_count += 1
+                self._building_positions[name] = (cx, cy)
+                logger.info(f"收集资源: {name} at ({cx},{cy})")
                 
-                if result.found:
-                    # 点击收集气泡
-                    center = result.center
-                    if self.click(center[0], center[1]):
-                        collected += 1
-                        self._collect_count += 1
-                        logger.info(f"收集资源: {building.name} at {center}")
-                        
-                        # 随机延迟
-                        delay = random.uniform(*self.click_delay)
-                        time.sleep(delay)
+                # 随机延迟
+                delay = random.uniform(*self.click_delay)
+                time.sleep(delay)
         
         if collected > 0:
             self._last_collect_time = time.time()
-            logger.info(f"本次收集了 {collected} 个资源建筑")
+            logger.info(f"本次收集了 {collected} 个资源气泡")
         
         return collected
     

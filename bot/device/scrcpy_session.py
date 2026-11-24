@@ -10,6 +10,7 @@ import socket
 import subprocess
 import time
 import logging
+import random
 import threading
 from typing import Optional, Tuple
 
@@ -88,9 +89,14 @@ class ScrcpySession:
         self.frame_rate = frame_rate
         self.cleanup = cleanup
         
+        # scid 隔离 socket 名，避免与残留会话冲突
+        self.scid = random.randint(0, 0x7FFFFFFF)
+        self.socket_name = f"scrcpy_{self.scid:08x}"
+        
         # 会话状态
         self._running = False
         self._server_process: Optional[subprocess.Popen] = None
+        self._listener: Optional[socket.socket] = None
         self._video_socket: Optional[socket.socket] = None
         self._control_socket: Optional[socket.socket] = None
         
@@ -157,18 +163,21 @@ class ScrcpySession:
         """
         建立 adb reverse 端口转发
         
+        server（tunnel_forward=false）会主动连接设备侧 abstract socket
+        "scrcpy_<scid>"，adb reverse 将其路由到本机 TCP 监听端口。
+        
         Returns:
             成功返回 True，否则返回 False
         """
-        logger.info("建立 adb reverse 端口转发")
+        logger.info(f"建立 adb reverse 端口转发: localabstract:{self.socket_name} -> tcp:{self.DEFAULT_VIDEO_PORT}")
         
         # 移除旧的转发规则
         self._run_adb_command(["reverse", "--remove-all"])
         
-        # 建立新的转发
+        # 建立新的转发（video 与 control 复用同一 socket 名，两条连接）
         success, _ = self._run_adb_command([
             "reverse",
-            f"localabstract:scrcpy",
+            f"localabstract:{self.socket_name}",
             f"tcp:{self.DEFAULT_VIDEO_PORT}"
         ])
         
@@ -198,10 +207,12 @@ class ScrcpySession:
             "com.genymobile.scrcpy.Server",
             "2.1",  # scrcpy 版本
             f"log_level=info",
+            f"scid={self.scid:08x}",  # 8 位十六进制，server 按 base-16 解析
             f"max_size={self.max_size}",
             f"max_fps={self.frame_rate}",
             f"video_bit_rate={self.bit_rate}",
             f"cleanup=false",  # 必须为 false
+            f"audio=false",  # 不采集音频，否则 server 会阻塞等待 audio 连接
             f"raw_stream=true"  # 原始流模式
         ])
         
@@ -228,35 +239,53 @@ class ScrcpySession:
             logger.error(f"启动 scrcpy-server 异常: {e}")
             return False
     
-    def connect_sockets(self) -> bool:
+    def prepare_listener(self) -> bool:
         """
-        连接 video 和 control sockets
+        绑定本机监听端口
+        
+        reverse 模式下 server 启动后会主动连入本机，
+        必须在 start_server 之前完成绑定。
         
         Returns:
             成功返回 True，否则返回 False
         """
-        logger.info("连接 scrcpy sockets")
+        logger.info(f"绑定本机监听端口 tcp:{self.DEFAULT_VIDEO_PORT}")
+        try:
+            self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._listener.bind(("127.0.0.1", self.DEFAULT_VIDEO_PORT))
+            self._listener.listen(2)
+            return True
+        except Exception as e:
+            logger.error(f"绑定监听端口失败: {e}")
+            return False
+    
+    def accept_connections(self) -> bool:
+        """
+        接收 server 连入的 video 和 control 连接
+        
+        连接顺序固定为 video -> control（audio 已禁用）。
+        
+        Returns:
+            成功返回 True，否则返回 False
+        """
+        logger.info("等待 scrcpy 连接（server 将主动连入）")
         
         try:
-            # 等待端口就绪
-            time.sleep(0.5)
+            self._listener.settimeout(10.0)
             
-            # 连接 video socket（通过 localhost 转发端口）
-            self._video_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._video_socket.settimeout(5.0)
-            self._video_socket.connect(("127.0.0.1", self.DEFAULT_VIDEO_PORT))
+            self._video_socket, _ = self._listener.accept()
+            self._video_socket.settimeout(None)
             logger.info("Video socket 已连接")
             
-            # 连接 control socket（可以保持空闲，但必须连接）
-            self._control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._control_socket.settimeout(5.0)
-            self._control_socket.connect(("127.0.0.1", self.DEFAULT_CONTROL_PORT + 1))
+            self._control_socket, _ = self._listener.accept()
+            self._control_socket.settimeout(None)
             logger.info("Control socket 已连接")
             
             return True
             
         except Exception as e:
-            logger.error(f"连接 sockets 失败: {e}")
+            logger.error(f"接收 scrcpy 连接失败: {e}")
             return False
     
     def init_decoder(self) -> bool:
@@ -303,24 +332,30 @@ class ScrcpySession:
             logger.error("建立反向隧道失败")
             return False
         
-        # 3. 启动 server
-        if not self.start_server():
-            logger.error("启动 server 失败")
+        # 3. 绑定本机监听（必须先于 server 启动，server 会主动连入）
+        if not self.prepare_listener():
+            logger.error("绑定监听端口失败")
             return False
         
-        # 4. 连接 sockets
-        if not self.connect_sockets():
-            logger.error("连接 sockets 失败")
+        # 4. 启动 server
+        if not self.start_server():
+            logger.error("启动 server 失败")
             self.stop()
             return False
         
-        # 5. 初始化解码器
+        # 5. 接收 video/control 连接
+        if not self.accept_connections():
+            logger.error("接收 sockets 失败")
+            self.stop()
+            return False
+        
+        # 6. 初始化解码器
         if not self.init_decoder():
             logger.error("初始化解码器失败")
             self.stop()
             return False
         
-        # 6. 启动接收线程
+        # 7. 启动接收线程
         self._running = True
         self._recv_thread = threading.Thread(
             target=self._recv_loop,
@@ -353,6 +388,13 @@ class ScrcpySession:
                 pass
             self._control_socket = None
         
+        if self._listener:
+            try:
+                self._listener.close()
+            except:
+                pass
+            self._listener = None
+        
         # 终止 server 进程
         if self._server_process:
             try:
@@ -369,6 +411,9 @@ class ScrcpySession:
         if self._recv_thread:
             self._recv_thread.join(timeout=2.0)
             self._recv_thread = None
+        
+        # 移除反向隧道规则
+        self._run_adb_command(["reverse", "--remove-all"])
         
         logger.info("scrcpy 会话已停止")
     

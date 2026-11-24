@@ -48,6 +48,7 @@ class StateClassifier:
         GameState.BATTLE_RESULTS,  # 战斗结算
         GameState.ENEMY_BASE,      # 战斗中
         GameState.ATTACK_SEARCH,   # 搜索对手
+        GameState.MY_ARMY,         # 我的军队
         GameState.ATTACK_MENU,     # 攻击菜单
         GameState.DONATE_TROOPS,   # 捐兵
         GameState.CLAN_CHAT,       # 部落聊天

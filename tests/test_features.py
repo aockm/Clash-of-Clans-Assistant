@@ -34,7 +34,7 @@ from bot.features.collector import ResourceCollector, ResourceBuilding
 from bot.features.upgrader import BuildingUpgrader, UpgradeTarget, UpgradePriority
 from bot.features.donator import TroopDonator, DonationRequest
 from bot.features.attacker import AttackSearcher, EnemyBaseInfo
-from bot.features.deployer import BattleDeployer, DeployConfig, DeployPattern, HeroConfig
+from bot.features.deployer import BattleDeployer, DeployPattern, HeroConfig
 
 
 class TestResourceCollector(unittest.TestCase):
@@ -394,16 +394,21 @@ class TestBattleDeployer(unittest.TestCase):
         self.assertEqual(self.deployer.troops_deployed, 0)
         self.assertEqual(self.deployer.battles_count, 0)
     
-    def test_add_troop(self):
-        """测试添加兵种"""
-        config = DeployConfig(
-            troop_name="野蛮人",
-            troop_template="troop_barbarian",
-            count=20,
-            pattern=DeployPattern.EDGE
-        )
-        self.deployer.add_troop(config)
-        self.assertEqual(len(self.deployer.deploy_configs), 1)
+    def _make_battle_frame(self, filled_slots=(0,)):
+        """构造 800x360 战斗画面：绿色背景 + 指定槽位放蓝色兵种卡"""
+        frame = np.zeros((360, 800, 3), dtype=np.uint8)
+        frame[:, :] = (40, 120, 40)  # 草地绿
+        for i in filled_slots:
+            cx = BattleDeployer.SLOT_X0 + i * BattleDeployer.SLOT_DX
+            frame[BattleDeployer.SLOT_TOP:BattleDeployer.SLOT_BOT,
+                  cx - BattleDeployer.SLOT_HALF:cx + BattleDeployer.SLOT_HALF] = (200, 120, 60)
+        return frame
+    
+    def test_scan_slots(self):
+        """测试兵种栏槽位检测"""
+        frame = self._make_battle_frame(filled_slots=(0, 2))
+        slots = self.deployer._scan_slots(frame)
+        self.assertEqual(slots, [0, 2])
     
     def test_add_hero(self):
         """测试添加英雄"""
@@ -460,64 +465,83 @@ class TestBattleDeployer(unittest.TestCase):
             self.assertLessEqual(y, 400)
     
     def test_deploy_troops(self):
-        """测试部署兵种"""
-        config = DeployConfig(
-            troop_name="弓箭手",
-            troop_template="troop_archer",
-            count=5,
-            pattern=DeployPattern.SPREAD
+        """测试动态部署全部兵种"""
+        from bot.vision.edge_detector import EdgeResult
+        
+        zone = DeployZone(x=100, y=100, width=400, height=200, is_deployable=True)
+        self.edge_detector.detect_deploy_zone.return_value = EdgeResult(
+            success=True, deployable_zone=zone
         )
-        self.deployer.add_troop(config)
+        self.edge_detector.generate_deploy_points.return_value = [
+            (150, 150), (400, 120), (600, 200), (250, 250)
+        ]
         
-        # 模拟匹配结果
-        self.matcher.match.return_value = MatchResult(
-            found=True, x=300, y=450, width=60, height=60,
-            confidence=0.9, template_name="troop_archer"
+        frame = self._make_battle_frame(filled_slots=(0,))
+        empty = self._make_battle_frame(filled_slots=())
+        
+        # 首次扫描返回有卡画面，之后返回已清空画面
+        state = {"first": True}
+        def provider():
+            if state["first"]:
+                state["first"] = False
+                return frame
+            return empty
+        
+        # 角标：第一轮剩 3，第二轮无角标（已部署完）
+        ocr = Mock()
+        ocr.recognize_badge_count.side_effect = [3, None]
+        
+        deployer = BattleDeployer(
+            self.sm, self.matcher, self.edge_detector,
+            click_callback=lambda x, y: True,
+            frame_provider=provider, ocr=ocr
         )
+        count = deployer.deploy_troops(frame)
         
-        # 模拟部署区域
-        zone = DeployZone(x=100, y=100, width=400, height=300, is_deployable=True)
-        self.deployer._deploy_zone = zone
-        
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        count = self.deployer.deploy_troops(frame)
-        
-        self.assertEqual(count, 5)
-        self.assertEqual(self.deployer.troops_deployed, 5)
-        self.assertGreater(len(self.click_log), 0)
+        # 按角标数量点击 3 次后复查无角标，停止部署
+        self.assertEqual(count, 3)
+        self.assertEqual(deployer.troops_deployed, 3)
     
     def test_run_battle(self):
         """测试完整战斗流程"""
-        # 添加兵种和英雄
-        troop_config = DeployConfig(
-            troop_name="巨人",
-            troop_template="troop_giant",
-            count=3,
-            pattern=DeployPattern.EDGE
-        )
-        self.deployer.add_troop(troop_config)
+        from bot.vision.edge_detector import EdgeResult
         
-        hero_config = HeroConfig(
-            name="野蛮人之王",
-            template="hero_barbarian_king"
+        zone = DeployZone(x=100, y=100, width=400, height=200, is_deployable=True)
+        self.edge_detector.detect_deploy_zone.return_value = EdgeResult(
+            success=True, deployable_zone=zone
         )
-        self.deployer.add_hero(hero_config)
+        self.edge_detector.generate_deploy_points.return_value = [
+            (150, 150), (400, 120), (600, 200), (250, 250)
+        ]
         
-        # 模拟匹配
         self.matcher.match.return_value = MatchResult(
-            found=True, x=300, y=400, width=60, height=60,
-            confidence=0.9, template_name="troop"
+            found=False, x=0, y=0, width=0, height=0,
+            confidence=0.0, template_name="none"
         )
         
-        # 模拟部署区域
-        zone = DeployZone(x=100, y=100, width=400, height=300, is_deployable=True)
-        self.deployer._deploy_zone = zone
+        frame = self._make_battle_frame(filled_slots=(0, 1))
+        empty = self._make_battle_frame(filled_slots=())
         
-        frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        self.deployer.run_battle(frame)
+        state = {"first": True}
+        def provider():
+            if state["first"]:
+                state["first"] = False
+                return frame
+            return empty
         
-        self.assertEqual(self.deployer.battles_count, 1)
-        self.assertGreater(self.deployer.troops_deployed, 0)
+        ocr = Mock()
+        ocr.recognize_badge_count.side_effect = [2, None, 2, None]
+        
+        deployer = BattleDeployer(
+            self.sm, self.matcher, self.edge_detector,
+            click_callback=lambda x, y: True,
+            frame_provider=provider, ocr=ocr
+        )
+        deployer.hero_ability_delay = (0.01, 0.02)
+        deployer.run_battle(frame)
+        
+        self.assertEqual(deployer.battles_count, 1)
+        self.assertEqual(deployer.troops_deployed, 4)
 
 
 def run_basic_tests():
@@ -600,15 +624,13 @@ def run_basic_tests():
     edge_detector = Mock(spec=EdgeDetector)
     deployer = BattleDeployer(sm3, matcher, edge_detector, click_callback=lambda x, y: True)
     
-    troop_config = DeployConfig(
-        troop_name="弓箭手",
-        troop_template="troop_archer",
-        count=10,
-        pattern=DeployPattern.SPREAD
-    )
-    deployer.add_troop(troop_config)
-    assert len(deployer.deploy_configs) == 1
-    print("  ✓ 兵种配置添加正常")
+    battle_frame = np.zeros((360, 800, 3), dtype=np.uint8)
+    battle_frame[:, :] = (40, 120, 40)
+    cx = BattleDeployer.SLOT_X0
+    battle_frame[BattleDeployer.SLOT_TOP:BattleDeployer.SLOT_BOT,
+                 cx - BattleDeployer.SLOT_HALF:cx + BattleDeployer.SLOT_HALF] = (200, 120, 60)
+    assert deployer._scan_slots(battle_frame) == [0]
+    print("  ✓ 兵种栏槽位检测正常")
     
     zone = DeployZone(x=100, y=100, width=400, height=300, is_deployable=True)
     points = deployer.generate_deploy_points(zone, 10, DeployPattern.SPREAD)

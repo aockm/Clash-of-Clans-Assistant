@@ -7,7 +7,7 @@ Orchestrator - 主调度器
 
 import time
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -15,6 +15,8 @@ import numpy as np
 from .device.frame_buffer import FrameBufferManager
 from .device.adb_manager import ADBManager
 from .device.coordinate import CoordinateMapper
+from .device.scrcpy_session import ScrcpySession
+from .device.fallback_capture import FallbackCapture
 from .vision.template_matcher import TemplateMatcher
 from .vision.ocr_engine import OCREngine
 from .vision.edge_detector import EdgeDetector
@@ -26,7 +28,7 @@ from .features.collector import ResourceCollector
 from .features.upgrader import BuildingUpgrader
 from .features.donator import TroopDonator
 from .features.attacker import AttackSearcher
-from .features.deployer import BattleDeployer
+from .features.deployer import BattleDeployer, HeroConfig
 from .safety.randomizer import Randomizer
 from .safety.session_control import SessionController, SessionConfig
 
@@ -74,6 +76,7 @@ class Orchestrator:
         self.frame_buffer: Optional[FrameBufferManager] = None
         self.adb: Optional[ADBManager] = None
         self.coord_mapper: Optional[CoordinateMapper] = None
+        self.scrcpy: Optional[ScrcpySession] = None
         
         # 视觉组件
         self.template_matcher: Optional[TemplateMatcher] = None
@@ -107,7 +110,11 @@ class Orchestrator:
         self,
         adb_path: str = "adb",
         device_serial: Optional[str] = None,
-        templates_dir: str = "assets/templates"
+        templates_dir: str = "assets/templates",
+        scrcpy_server_path: Optional[str] = None,
+        click_offset: Optional[int] = None,
+        deploy_config: Optional[Dict[str, Any]] = None,
+        attacker_config: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
         初始化所有组件
@@ -116,6 +123,7 @@ class Orchestrator:
             adb_path: ADB 路径
             device_serial: 设备序列号
             templates_dir: 模板目录
+            scrcpy_server_path: 本地 scrcpy-server.jar 路径，None 则直接使用 ADB 截图采集
             
         Returns:
             初始化成功返回 True
@@ -136,14 +144,31 @@ class Orchestrator:
             else:
                 device_w, device_h = 1080, 1920  # 默认值
             
-            # 2. 初始化帧缓冲（使用 fallback 模式）
-            from .device.fallback_capture import FallbackCapture
-            fallback = FallbackCapture(adb_path, device_serial)
+            # 2. 初始化帧缓冲（优先 scrcpy 视频流，失败降级 ADB 截图）
             self.frame_buffer = FrameBufferManager(buffer_size=10)
-            self.frame_buffer.set_source(fallback)
+            if scrcpy_server_path:
+                self.scrcpy = ScrcpySession(
+                    adb_path=adb_path,
+                    device_serial=device_serial,
+                    scrcpy_server_path=scrcpy_server_path
+                )
+                if self.scrcpy.start():
+                    self.frame_buffer.set_source(self.scrcpy)
+                else:
+                    logger.warning("scrcpy 会话启动失败，降级到 ADB 截图采集")
+                    self.scrcpy = None
+                    self.frame_buffer.set_source(FallbackCapture(adb_path, device_serial))
+            else:
+                logger.info("未配置 scrcpy_server_path，使用 ADB 截图采集")
+                self.frame_buffer.set_source(FallbackCapture(adb_path, device_serial))
             
-            # 3. 初始化坐标映射器
-            video_w, video_h = 720, 1280  # 默认视频尺寸
+            # 3. 初始化坐标映射器（使用真实视频流尺寸，而非硬编码）
+            video_w, video_h = self._wait_video_size()
+            if video_w == 0:
+                video_w, video_h = device_w, device_h
+            # adb input tap 坐标基于当前显示方向：视频流与设备自然方向横竖不一致时需交换
+            if (video_w > video_h) != (device_w > device_h):
+                device_w, device_h = device_h, device_w
             self.coord_mapper = CoordinateMapper(
                 video_w, video_h, device_w, device_h
             )
@@ -156,6 +181,35 @@ class Orchestrator:
             # 5. 初始化状态机
             self.state_machine = StateMachine(GameState.MAIN_VILLAGE)
             self.state_classifier = StateClassifier(self.template_matcher)
+            
+            # 加载模板并注册状态检测（当前仅主村庄，其余状态待补充模板后注册）
+            self.template_matcher.load_templates_from_dir()
+            self.state_classifier.register_state(
+                GameState.MAIN_VILLAGE,
+                [
+                    "main_village_battle_btn",
+                    "main_village_build_btn",
+                    "main_village_home_icon",
+                ],
+                threshold=0.8
+            )
+            # 攻击链状态模板均为固定 UI 位置，使用 ROI + 高阈值避免村庄画面误匹配
+            self.state_classifier.register_state(
+                GameState.ATTACK_MENU, ["find_match_button"],
+                threshold=0.8, roi=(50, 225, 180, 80)
+            )
+            self.state_classifier.register_state(
+                GameState.MY_ARMY, ["army_attack_button"],
+                threshold=0.8, roi=(560, 290, 200, 70)
+            )
+            self.state_classifier.register_state(
+                GameState.ENEMY_BASE, ["battle_end_button"],
+                threshold=0.8, roi=(10, 260, 130, 60)
+            )
+            self.state_classifier.register_state(
+                GameState.BATTLE_RESULTS, ["result_return_button"],
+                threshold=0.85, roi=(330, 295, 150, 65)
+            )
             self.navigator = Navigator(create_default_state_graph())
             self.fallback_handler = create_default_fallback_handler()
             
@@ -184,11 +238,28 @@ class Orchestrator:
             
             self.deployer = BattleDeployer(
                 self.state_machine, self.template_matcher,
-                self.edge_detector, click_callback
+                self.edge_detector, click_callback,
+                frame_provider=lambda: self.frame_buffer.get_latest() if self.frame_buffer else None,
+                ocr=self.ocr_engine
             )
             
+            # 从配置加载部署设置（兵种按兵种栏槽位动态全量部署，无需配置模板）
+            if deploy_config:
+                for h in deploy_config.get("heroes", []) or []:
+                    self.deployer.add_hero(HeroConfig(
+                        name=h.get("name", "hero"),
+                        template=h.get("template", ""),
+                    ))
+                if deploy_config.get("deploy_zone_padding"):
+                    self.deployer.deploy_zone_padding = float(deploy_config["deploy_zone_padding"])
+            
+            # 自动配兵配置
+            if attacker_config and self.searcher:
+                army_cfg = attacker_config.get("army", {}) or {}
+                self.searcher.set_army_config(army_cfg.get("troops", []) or [])
+            
             # 7. 初始化安全组件
-            self.randomizer = Randomizer()
+            self.randomizer = Randomizer(click_offset=click_offset if click_offset is not None else 5)
             self.session_controller = SessionController()
             
             logger.info("所有组件初始化完成")
@@ -197,6 +268,24 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"初始化失败: {e}")
             return False
+    
+    def _wait_video_size(self, timeout: float = 10.0) -> Tuple[int, int]:
+        """
+        等待 scrcpy 解码首帧，获取真实视频流尺寸
+        
+        Returns:
+            (video_w, video_h)，不可用时返回 (0, 0)
+        """
+        if not self.scrcpy:
+            return (0, 0)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            w, h = self.scrcpy.video_size
+            if w > 0 and h > 0:
+                return (w, h)
+            time.sleep(0.2)
+        logger.warning("等待视频流尺寸超时，回退到设备尺寸 1:1 映射")
+        return (0, 0)
     
     def _safe_click(self, x: int, y: int) -> bool:
         """
@@ -264,6 +353,10 @@ class Orchestrator:
         if self.frame_buffer:
             self.frame_buffer.stop()
         
+        if self.scrcpy:
+            self.scrcpy.stop()
+            self.scrcpy = None
+        
         if self.session_controller:
             self.session_controller.stop()
         
@@ -327,11 +420,24 @@ class Orchestrator:
         
         # 2. 处理异常状态
         if self.fallback_handler and self.fallback_handler.should_handle(current_state):
-            logger.info(f"处理异常状态: {current_state.name}")
-            self.fallback_handler.execute_recovery(current_state)
-            return
+            # 攻击流程界面切换（匹配/加载）或自动配兵期间跳过恢复，继续分发
+            in_attack_flow = self.searcher and (
+                self.searcher.in_transition() or self.searcher.in_army_config()
+            )
+            if not in_attack_flow:
+                logger.info(f"处理异常状态: {current_state.name}")
+                self.fallback_handler.execute_recovery(current_state)
+                return
         
         # 3. 根据状态执行任务
+        # 自动配兵流程优先（弹窗打开时界面分类不可靠），
+        # 但已切入敌方基地/结算时放行，保证战斗部署不被拦截
+        if self.searcher and self.searcher.in_army_config() and current_state not in (
+            GameState.ENEMY_BASE, GameState.BATTLE_RESULTS
+        ):
+            self.searcher.handle_army_page(frame)
+            return
+        
         if current_state == GameState.MAIN_VILLAGE:
             self._handle_main_village(frame)
         
@@ -340,6 +446,12 @@ class Orchestrator:
         
         elif current_state == GameState.ATTACK_MENU:
             self._handle_attack_menu(frame)
+        
+        elif current_state == GameState.MY_ARMY or (
+            self.searcher and self.searcher.in_army_config()
+        ):
+            if self.searcher:
+                self.searcher.handle_army_page(frame)
         
         elif current_state == GameState.ENEMY_BASE:
             self._handle_battle(frame)
@@ -365,10 +477,18 @@ class Orchestrator:
                 logger.info("执行了建筑升级")
                 return
         
-        # 3. 开始攻击
-        if self.config.enable_attack and self.searcher:
-            if self.session_controller and self.session_controller.remaining_attacks > 0:
+        # 3. 攻击流程
+        if self.searcher:
+            want_attack = (
+                self.config.enable_attack
+                and self.session_controller
+                and self.session_controller.remaining_attacks > 0
+            )
+            if want_attack:
                 self.searcher.start_search(frame)
+            elif self.searcher.return_to_village(frame):
+                # 不需要攻击时，若停留在攻击页面则单击右侧屏幕返回村庄
+                return
     
     def _handle_clan_chat(self, frame: np.ndarray) -> None:
         """处理部落聊天状态"""
@@ -389,12 +509,19 @@ class Orchestrator:
     
     def _handle_results(self, frame: np.ndarray) -> None:
         """处理战斗结算状态"""
-        if self.session_controller:
-            self.session_controller.record_attack()
+        now = time.time()
+        if now - getattr(self, "_last_result_ts", 0.0) > 10.0:
+            self._last_result_ts = now
+            if self.session_controller:
+                self.session_controller.record_attack()
+            if self.deployer:
+                self.deployer.finish_battle()
         
-        # 点击返回
+        # 点击"回营"返回按钮
         time.sleep(2.0)
-        self._safe_click(540, 1800)  # 假设的返回按钮位置
+        result = self.template_matcher.match(frame, "result_return_button", threshold=0.8)
+        if result.found:
+            self._safe_click(*result.center)
     
     def get_status(self) -> Dict[str, Any]:
         """
