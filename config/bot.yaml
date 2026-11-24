@@ -1,0 +1,109 @@
+# Clash of Clans Assistant - 配置文件
+
+# 设备配置
+device:
+  adb_path: "adb"
+  device_serial: null  # null 表示自动选择第一个设备
+  video_width: 720
+  video_height: 1280
+
+# 视觉配置
+vision:
+  templates_dir: "assets/templates"
+  ocr_upscale_factor: 3
+  template_threshold: 0.8
+
+# 状态机配置
+state_machine:
+  confirm_frames:
+    POPUP: 2
+    BATTLE_RESULTS: 2
+    ENEMY_BASE: 1
+
+# 功能开关
+features:
+  enable_collect: true
+  enable_upgrade: true
+  enable_donate: true
+  enable_attack: true
+
+# 任务优先级（数值越大优先级越高）
+priority:
+  donate: 10
+  collect: 8
+  upgrade: 6
+  attack: 4
+
+# 资源收集配置
+collector:
+  collect_interval: 30.0  # 收集间隔（秒）
+  click_delay: [0.3, 0.8]
+
+# 建筑升级配置
+upgrader:
+  action_delay: [0.5, 1.2]
+  confirm_delay: [0.3, 0.8]
+
+# 攻击搜索配置
+attacker:
+  min_gold: 50000
+  min_elixir: 50000
+  min_dark_elixir: 0
+  max_skip_count: 5
+  search_timeout: 30.0
+
+# 战斗部署配置
+deployer:
+  deploy_zone_padding: 20
+  hero_ability_delay: [4.0, 6.0]
+  
+  # 兵种配置
+  troops:
+    - name: "野蛮人"
+      template: "troop_barbarian"
+      count: 20
+      pattern: "edge"
+    
+    - name: "弓箭手"
+      template: "troop_archer"
+      count: 10
+      pattern: "edge"
+    
+    - name: "巨人"
+      template: "troop_giant"
+      count: 5
+      pattern: "corner"
+  
+  # 英雄配置
+  heroes:
+    - name: "野蛮人之王"
+      template: "hero_barbarian_king"
+      activate_delay: 5.0
+    
+    - name: "弓箭女皇"
+      template: "hero_archer_queen"
+      activate_delay: 5.0
+
+# 安全配置
+safety:
+  # 点击随机化
+  click_offset: 15  # 像素
+  
+  # 延迟随机化
+  delay_range: [0.3, 0.8]
+  long_delay_range: [1.0, 3.0]
+  
+  # 会话控制
+  session:
+    max_duration: 3600  # 最大运行时长（秒）
+    min_duration: 1800  # 最小运行时长（秒）
+    max_attacks: 12     # 最大攻击次数
+    min_attacks: 8      # 最小攻击次数
+    break_probability: 0.1
+    break_duration: [30.0, 120.0]
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/bot.log"
