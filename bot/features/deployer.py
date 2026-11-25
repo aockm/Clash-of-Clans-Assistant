@@ -214,7 +214,7 @@ class BattleDeployer:
                 if frame is not None:
                     return frame
             except Exception as e:
-                logger.debug(f"获取实时帧失败: {e}")
+                logger.warning(f"获取实时帧失败: {e}")
         return fallback
     
     def _slot_stats(self, frame: np.ndarray, slot: int) -> Tuple[float, float, float]:
@@ -272,8 +272,16 @@ class BattleDeployer:
             for _ in range(240)
         ]
         
-        f = self._fresh_frame(frame)
-        slots = self._scan_slots(f)
+        # 战斗开场有镜头动画，轮询等待兵种栏可见（最多 10 秒）
+        slots = []
+        f = frame
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            f = self._fresh_frame(frame)
+            slots = self._scan_slots(f)
+            if slots:
+                break
+            time.sleep(1.0)
         if not slots:
             logger.warning("兵种栏未检测到兵种卡")
             return 0

@@ -239,7 +239,7 @@ class Orchestrator:
             self.deployer = BattleDeployer(
                 self.state_machine, self.template_matcher,
                 self.edge_detector, click_callback,
-                frame_provider=lambda: self.frame_buffer.get_latest() if self.frame_buffer else None,
+                frame_provider=lambda: self.frame_buffer.get_latest_frame() if self.frame_buffer else None,
                 ocr=self.ocr_engine
             )
             
