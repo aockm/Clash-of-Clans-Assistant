@@ -1,0 +1,37 @@
+device:
+  serial: null                # null 表示自动取第一台设备
+  scrcpy_max_size: 1280       # 视频编码最大边长
+  scrcpy_bit_rate: 8000000
+  frame_buffer_size: 10
+
+paths:
+  templates_dir: assets/templates
+
+safety:
+  click_jitter_px: 15         # 点击坐标 ±随机偏移
+  action_delay_range: [0.3, 0.8]
+  confirm_frames: 2           # 状态确认所需连续一致帧数
+  max_attacks_per_session: [8, 12]
+
+attack:
+  min_loot_gold: 300000       # 低于该资源跳过
+  min_loot_elixir: 300000
+  max_next_attempts: 20       # 搜索对手最多“下一个”次数
+
+deploy:
+  card_slot_start: [250, 518] # 底部首个兵种卡牌中心（视频坐标）
+  card_slot_pitch: 81         # 相邻卡牌中心间距
+  card_slot_count: 11         # 卡槽总数
+  boundary_margin: 40         # 红区外扩距离，部署点落在红区外
+  max_rounds: 4               # 每个兵种最多投放轮次（每轮把所有边界点各点一次）
+  map_bottom: 365             # 卡牌栏起始 y，边界线低于此值会被遮挡
+  max_recenter: 3             # 底部边界被遮挡时，最多向下拖动地图的次数
+
+battle_end:
+  sample_interval: 3          # 摧毁率/战利品采样间隔（秒）
+  stable_samples: 3           # 连续多少次采样摧毁率不变视为稳定
+  stall_seconds: 25           # 敌方资源无变化超过该时长则结束战斗
+  history_size: 10            # 保留最近采样数
+
+logging:
+  level: INFO
