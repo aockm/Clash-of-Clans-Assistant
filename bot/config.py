@@ -20,11 +20,31 @@ class SafetyConfig:
     max_attacks_per_session: tuple[int, int] = (8, 12)
 
 
+# 各大本营等级的默认资源门槛：金币或圣水任一达标即进攻
+DEFAULT_LOOT_BY_TH: dict[int, int] = {
+    1: 500, 2: 1_000, 3: 2_000, 4: 12_000, 5: 18_000, 6: 26_000,
+    7: 38_000, 8: 55_000, 9: 75_000, 10: 100_000, 11: 130_000,
+    12: 165_000, 13: 200_000, 14: 240_000, 15: 280_000, 16: 320_000,
+}
+
+
 @dataclass
 class AttackConfig:
-    min_loot_gold: int = 300_000
-    min_loot_elixir: int = 300_000
+    town_hall_level: int = 10
+    min_loot_gold: int | None = None
+    min_loot_elixir: int | None = None
     max_next_attempts: int = 20
+
+    def _default_loot(self) -> int:
+        return DEFAULT_LOOT_BY_TH.get(self.town_hall_level, 100_000)
+
+    @property
+    def gold_threshold(self) -> int:
+        return self.min_loot_gold or self._default_loot()
+
+    @property
+    def elixir_threshold(self) -> int:
+        return self.min_loot_elixir or self._default_loot()
 
 
 @dataclass

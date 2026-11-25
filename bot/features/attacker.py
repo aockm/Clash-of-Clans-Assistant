@@ -73,24 +73,26 @@ class Attacker(Feature):
 
         gold = self.ctx.ocr.read_number(frame, self.ROI_GOLD) or 0
         elixir = self.ctx.ocr.read_number(frame, self.ROI_ELIXIR) or 0
-        logger.info("Opponent loot: gold=%d elixir=%d", gold, elixir)
+        attack_cfg = self.ctx.config.attack
+        logger.info("对手战利品：金币=%d 圣水=%d（门槛 金币%d/圣水%d，本营%d级）",
+                    gold, elixir, attack_cfg.gold_threshold,
+                    attack_cfg.elixir_threshold, attack_cfg.town_hall_level)
 
         if gold == 0 and elixir == 0:
             # 多半是 OCR 没读到（界面遮挡/动画中），不做“下一个”以免白花金币
             logger.warning("战利品读取为 0，本轮不做决策")
             return False
 
-        if (gold >= self.ctx.config.attack.min_loot_gold
-                or elixir >= self.ctx.config.attack.min_loot_elixir):
-            logger.info("Loot qualifies, entering battle")
+        if gold >= attack_cfg.gold_threshold or elixir >= attack_cfg.elixir_threshold:
+            logger.info("资源达标，进入战斗")
             self.ctx.flags["attack_accepted"] = True
             return True
 
         attempts = self.ctx.flags.get("next_attempts", 0)
-        if attempts >= self.ctx.config.attack.max_next_attempts:
-            logger.warning("Max next attempts reached, ending search")
+        if attempts >= attack_cfg.max_next_attempts:
+            logger.warning("已换满 %d 个对手，结束搜索", attack_cfg.max_next_attempts)
             self.ctx.flags["next_attempts"] = 0
-            end = self.ctx.matcher.match(frame, "find_match_end_battle_btn")
+            end = self.ctx.matcher.match(frame, "battle_end_battle_btn")
             if end:
                 self.ctx.actions.tap(*end.center)
             return False

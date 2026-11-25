@@ -14,8 +14,9 @@ safety:
   max_attacks_per_session: [8, 12]
 
 attack:
-  min_loot_gold: 300000       # 低于该资源跳过
-  min_loot_elixir: 300000
+  town_hall_level: 3        # 本人大本营等级：决定默认资源门槛
+  min_loot_gold: null         # 留空则按大本营等级取默认值；填数字可强制覆盖
+  min_loot_elixir: null
   max_next_attempts: 20       # 搜索对手最多“下一个”次数
 
 deploy:
