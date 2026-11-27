@@ -35,6 +35,7 @@ class Deployer(Feature):
     def _deploy_all(self, frame: np.ndarray) -> bool:
         cfg = self.ctx.config.deploy
 
+        frame = self._zoom_out(frame)
         frame, points = self._recenter_until_fit(frame)
         if len(points) < 4:
             points = self._reveal_boundary()
@@ -59,9 +60,28 @@ class Deployer(Feature):
         self.ctx.flags["attack_accepted"] = False
         self.ctx.flags["next_attempts"] = 0
         self.ctx.flags["deployed"] = True
+        self.ctx.flags["battle_zoomed"] = False
         self.ctx.flags["battle_history"] = []
         self.ctx.flags["last_sample"] = 0.0
         return True
+
+    def _zoom_out(self, frame: np.ndarray) -> np.ndarray:
+        """进入敌方村庄先双指捏合缩小地图，确保整个村庄可见再做部署。"""
+        if self.ctx.flags.get("battle_zoomed"):
+            return frame
+        touch = self.ctx.touch
+        if touch is None:
+            logger.warning("没有 scrcpy 触控通道，跳过地图缩小")
+            return frame
+
+        h, w = frame.shape[:2]
+        logger.info("缩小敌方地图（双指捏合）")
+        if not touch.pinch_in(w // 2, int(h * 0.55)):
+            return frame
+        time.sleep(0.8)
+        self.ctx.flags["battle_zoomed"] = True
+        latest = self.ctx.frames.get_latest()
+        return latest if latest is not None else frame
 
     def _recenter_until_fit(self, frame: np.ndarray
                             ) -> tuple[np.ndarray, list[tuple[int, int]]]:

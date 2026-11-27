@@ -30,3 +30,7 @@ class SafeActions:
                         ex + random.randint(-j, j), ey + random.randint(-j, j),
                         duration=duration)
         time.sleep(random.uniform(*self._delay))
+
+    def back(self) -> None:
+        self._adb.key_back()
+        time.sleep(random.uniform(*self._delay))

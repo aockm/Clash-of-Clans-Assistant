@@ -41,6 +41,12 @@ class Attacker(Feature):
         m = self.ctx.matcher.match(frame, "results_return_home", threshold=0.9)
         if m:
             logger.info("结算页返回主页")
+            # 战斗已结束（含打满摧毁率自动结算），清理战斗状态，
+            # 否则 deployed 一直为真会导致主循环无法退出
+            self.ctx.flags.pop("battle_zoomed", None)
+            self.ctx.flags["deployed"] = False
+            self.ctx.flags["await_confirm"] = False
+            self.ctx.flags["battle_history"] = []
             self.ctx.actions.tap(*m.center)
             return True
         return False

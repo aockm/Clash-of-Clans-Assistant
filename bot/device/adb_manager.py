@@ -16,6 +16,10 @@ class AdbManager:
     def tap(self, x: int, y: int) -> None:
         self.device.click(x, y)
 
+    def key_back(self) -> None:
+        """发送返回键：用于可靠关闭建筑面板/弹窗。"""
+        self.device.keyevent(4)
+
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) -> None:
         self.device.swipe(x1, y1, x2, y2, duration=duration)
 

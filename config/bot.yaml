@@ -34,5 +34,21 @@ battle_end:
   stall_seconds: 25           # 敌方资源无变化超过该时长则结束战斗
   history_size: 10            # 保留最近采样数
 
+upgrade:
+  enabled: true
+  row_x: 1094                 # 点击列表行的 x 坐标（行 y 由右侧货币图标动态识别）
+  cooldown: 20                # 两次升级尝试的最小间隔（秒）
+  panel_timeout: 2.5          # 点“建造”后等待列表出现的时限
+  confirm_timeout: 2.5        # 点列表行后等待确认框的时限
+  max_failures: 3             # 连续失败上限，达到后本会话不再升级
+  nobuilder_cooldown: 600     # 工人全忙时暂停升级的时长（秒）
+
+accounts:
+  enabled: true
+  names:                      # 按顺序轮换；每个账号打满 max_attacks_per_session 后切下一个
+    - Murphy11111
+    - NingYaoSword
+  th_cache_hours: 168         # 大本营等级缓存有效期（7 天），过期后重新识别
+
 logging:
   level: INFO

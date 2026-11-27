@@ -50,3 +50,33 @@ class TemplateMatcher:
         rect = (x0 + loc[0], y0 + loc[1], tw, th)
         center = (rect[0] + tw // 2, rect[1] + th // 2)
         return MatchResult(name=name, score=float(score), center=center, rect=rect)
+
+    def match_all(self, frame: np.ndarray, name: str,
+                  roi: tuple[int, int, int, int] | None = None,
+                  threshold: float = 0.85,
+                  max_results: int = 8) -> list[MatchResult]:
+        """找出模板在画面中的所有命中位置（列表类 UI 用）。"""
+        tpl = self._templates.get(name)
+        if tpl is None:
+            logger.warning("Template not found: %s", name)
+            return []
+        x0, y0 = 0, 0
+        search = frame
+        if roi is not None:
+            x0, y0, w, h = roi
+            search = frame[y0:y0 + h, x0:x0 + w]
+        res = cv2.matchTemplate(search, tpl, cv2.TM_CCOEFF_NORMED)
+        th, tw = tpl.shape[:2]
+        results: list[MatchResult] = []
+        for _ in range(max_results):
+            _, score, _, loc = cv2.minMaxLoc(res)
+            if score < threshold:
+                break
+            rect = (x0 + loc[0], y0 + loc[1], tw, th)
+            center = (rect[0] + tw // 2, rect[1] + th // 2)
+            results.append(MatchResult(name=name, score=float(score),
+                                       center=center, rect=rect))
+            lx, ly = loc
+            res[max(0, ly - th // 2):ly + th // 2 + 1,
+                max(0, lx - tw // 2):lx + tw // 2 + 1] = -1.0
+        return results

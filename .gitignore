@@ -41,6 +41,7 @@ htmlcov/
 Thumbs.db
 
 # Runtime artifacts
+data/
 screenshots/
 captures/
 recordings/

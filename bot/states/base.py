@@ -20,6 +20,9 @@ class GameState(enum.Enum):
     RESULTS = "results"
     CLAN_CHAT = "clan_chat"
     BUILDER_MENU = "builder_menu"
+    BUILDING_PANEL = "building_panel"  # 建筑信息面板 / 升级确认框
+    SETTINGS = "settings"              # 设置弹窗
+    SWITCH_ACCOUNT = "switch_account"  # Supercell ID 切换ID页
     POPUP = "popup"                  # 各类弹窗（最高打断优先级）
 
 

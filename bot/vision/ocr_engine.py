@@ -21,8 +21,11 @@ class OcrEngine:
 
     def read_text(self, frame: np.ndarray,
                   roi: tuple[int, int, int, int],
-                  lang: str = "eng") -> str:
+                  lang: str = "eng", scale: int = 3, psm: int = 7) -> str:
         x, y, w, h = roi
         crop = frame[y:y + h, x:x + w]
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        return pytesseract.image_to_string(gray, lang=lang).strip()
+        gray = cv2.resize(gray, None, fx=scale, fy=scale,
+                          interpolation=cv2.INTER_CUBIC)
+        return pytesseract.image_to_string(
+            gray, lang=lang, config=f"--psm {psm}").strip()

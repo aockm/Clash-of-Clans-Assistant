@@ -59,11 +59,30 @@ class DeployConfig:
 
 
 @dataclass
+class UpgradeConfig:
+    enabled: bool = False
+    row_x: int = 1094            # 点击列表行的 x 坐标（行 y 由货币图标动态识别）
+    cooldown: float = 20.0       # 两次升级尝试的最小间隔（秒）
+    panel_timeout: float = 2.5   # 点“建造”后等待列表出现的时限
+    confirm_timeout: float = 2.5  # 点列表行后等待确认框的时限
+    max_failures: int = 3        # 连续失败次数上限，达到后本次会话不再升级
+    nobuilder_cooldown: float = 600.0  # 工人全忙时暂停升级的时长（秒）
+
+
+@dataclass
 class BattleEndConfig:
     sample_interval: float = 3.0
     stable_samples: int = 3
     stall_seconds: int = 25
     history_size: int = 10
+
+
+@dataclass
+class AccountConfig:
+    enabled: bool = False
+    # 轮流使用的 Supercell ID 账号（按顺序），名称需与切换ID页显示一致
+    names: list[str] = field(default_factory=list)
+    th_cache_hours: float = 168.0  # 大本营等级识别结果有效期（默认 7 天）
 
 
 @dataclass
@@ -73,6 +92,8 @@ class Config:
     attack: AttackConfig = field(default_factory=AttackConfig)
     deploy: DeployConfig = field(default_factory=DeployConfig)
     battle_end: BattleEndConfig = field(default_factory=BattleEndConfig)
+    upgrade: UpgradeConfig = field(default_factory=UpgradeConfig)
+    accounts: AccountConfig = field(default_factory=AccountConfig)
     templates_dir: Path = Path("assets/templates")
     log_level: str = "INFO"
 
@@ -94,6 +115,10 @@ def load_config(path: str | Path) -> Config:
         cfg.deploy = DeployConfig(**d)
     if b := raw.get("battle_end"):
         cfg.battle_end = BattleEndConfig(**b)
+    if u := raw.get("upgrade"):
+        cfg.upgrade = UpgradeConfig(**u)
+    if a := raw.get("accounts"):
+        cfg.accounts = AccountConfig(**a)
     if p := raw.get("paths", {}).get("templates_dir"):
         cfg.templates_dir = Path(p)
     if l := raw.get("logging", {}).get("level"):
