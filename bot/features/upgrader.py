@@ -193,7 +193,10 @@ class Upgrader(Feature):
             buildings.append({"finish_at": round(finish, 1)})
             logger.info("在建建筑剩余 %d 秒（预计 %s 完成）", seconds,
                         time.strftime("%m-%d %H:%M", time.localtime(finish)))
-        if buildings:
+        if not icons:
+            # 列表里没有在建建筑：清空记录，避免已完成建筑残留导致反复维护
+            store.set_buildings(name, [])
+        elif buildings:
             store.set_buildings(name, buildings)
             logger.info("账号 %s 在建建筑 %d 座", name, len(buildings))
 

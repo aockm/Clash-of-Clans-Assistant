@@ -82,42 +82,62 @@ class AccountSwitcher:
         self._cache = _LevelCache(CACHE_PATH, cfg.th_cache_hours)
 
     def switch_to(self, name: str) -> int | None:
-        """切到指定账号，返回该账号大本营等级；失败返回 None。"""
-        if not self._ensure_village(15):
-            logger.warning("当前不在主村庄，无法切换账号")
+        """切到指定账号，返回该账号大本营等级；失败返回 None。
+
+        未找到账号时重启游戏再试（最多重启 2 次）。
+        """
+        for attempt in range(3):  # 首次 + 重启游戏重试 2 次
+            if attempt > 0:
+                logger.info("未找到账号 %s，重启游戏后重试（%d/2）", name, attempt)
+                self._restart_game()
+
+            if not self._ensure_village(15):
+                logger.warning("当前不在主村庄，无法切换账号")
+                return None
+
+            logger.info("切换账号：%s", name)
+            self.ctx.actions.tap(*self.TH_ICON)
+            if not self._wait_state(GameState.SETTINGS, 8):
+                logger.warning("未打开设置页")
+                return None
+
+            self.ctx.actions.tap(*self.SETTINGS_SWITCH)
+            if not self._wait_state(GameState.SWITCH_ACCOUNT, 8):
+                logger.warning("未打开切换ID页")
+                self.ctx.actions.tap(*self.SETTINGS_CLOSE)
+                return None
+
+            # 切换ID页有淡入动画；账号多时列表要向下滚动才能看到
+            target = self._locate_account(name)
+            if target is None:
+                self.ctx.actions.tap(*self.SWITCH_CLOSE)
+                if attempt >= 2:
+                    logger.warning("切换账号 %s 失败：未找到账号（已重启游戏 2 次）", name)
+                    return None
+                continue  # 触发下一次循环的重启
+
+            if target["y"] > 500 or target["y"] < 110:
+                # 目标行贴边（被裁切），再滑动一次让它完整露出
+                self._scroll_list(up=target["y"] > 500)
+                time.sleep(0.8)
+                target = self._pick(self._read_accounts(), name) or target
+
+            self.ctx.actions.tap(self.ROW_TAP_X, target["y"])
+            if self._wait_village(120, target["y"]):
+                logger.info("已切换到账号 %s（大本营 %s 级）", name, target["th"])
+                return target["th"]
+            logger.warning("切换账号 %s 后未回到主村庄", name)
             return None
-
-        logger.info("切换账号：%s", name)
-        self.ctx.actions.tap(*self.TH_ICON)
-        if not self._wait_state(GameState.SETTINGS, 8):
-            logger.warning("未打开设置页")
-            return None
-
-        self.ctx.actions.tap(*self.SETTINGS_SWITCH)
-        if not self._wait_state(GameState.SWITCH_ACCOUNT, 8):
-            logger.warning("未打开切换ID页")
-            self.ctx.actions.tap(*self.SETTINGS_CLOSE)
-            return None
-
-        # 切换ID页有淡入动画；账号多时列表要向下滚动才能看到
-        target = self._locate_account(name)
-        if target is None:
-            logger.warning("未找到账号 %s（已尝试滚动列表）", name)
-            self.ctx.actions.tap(*self.SWITCH_CLOSE)
-            return None
-
-        if target["y"] > 500 or target["y"] < 110:
-            # 目标行贴边（被裁切），再滑动一次让它完整露出
-            self._scroll_list(up=target["y"] > 500)
-            time.sleep(0.8)
-            target = self._pick(self._read_accounts(), name) or target
-
-        self.ctx.actions.tap(self.ROW_TAP_X, target["y"])
-        if self._wait_village(120, target["y"]):
-            logger.info("已切换到账号 %s（大本营 %s 级）", name, target["th"])
-            return target["th"]
-        logger.warning("切换账号 %s 后未回到主村庄", name)
         return None
+
+    def _restart_game(self) -> None:
+        """强杀并重新拉起游戏，等它回到主村庄。"""
+        pkg = self.ctx.config.device.game_package
+        self.ctx.adb.force_stop_app(pkg)
+        time.sleep(2.0)
+        self.ctx.adb.launch_app(pkg)
+        logger.info("已重启游戏，等待回到主村庄")
+        self._ensure_village(60)
 
     def _ensure_village(self, timeout: float) -> bool:
         """回到主村庄；若停在设置页/切换ID页/欢迎弹窗则先退出去。"""

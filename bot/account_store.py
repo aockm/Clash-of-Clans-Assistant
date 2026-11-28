@@ -83,6 +83,15 @@ class AccountStore:
         self._write(name, {"loot_full": int(loot_full),
                            "no_upgrade": int(no_upgrade)})
 
+    def finished_buildings(self, name: str, now: float | None = None) -> list[dict]:
+        """返回该账号已完成（finish_at <= now）的建筑列表。"""
+        rec = self.get(name)
+        if rec is None:
+            return []
+        now = now or time.time()
+        return [b for b in rec.get("buildings", [])
+                if float(b.get("finish_at", 0)) <= now]
+
     def should_skip(self, name: str, now: float | None = None,
                     valid_hours: float = 6.0) -> tuple[bool, str]:
         """资源已满且无可升级建筑时返回 True，表示本轮轮换跳过该账号。

@@ -31,3 +31,18 @@ class AdbManager:
         """唤醒并解锁屏幕：定时启动间隔较长，设备可能已经熄屏。"""
         self.device.shell("input keyevent KEYCODE_WAKEUP")
         self.device.shell("wm dismiss-keyguard")
+
+    def current_package(self) -> str | None:
+        """当前前台应用包名；读取失败返回 None。"""
+        try:
+            return self.device.app_current().package
+        except Exception:
+            return None
+
+    def launch_app(self, package: str) -> None:
+        """启动/拉起到前台 App。"""
+        self.device.app_start(package)
+
+    def force_stop_app(self, package: str) -> None:
+        """强杀 App（用于重启游戏）。"""
+        self.device.app_stop(package)

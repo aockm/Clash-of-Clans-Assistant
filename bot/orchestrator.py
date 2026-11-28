@@ -156,7 +156,11 @@ class Orchestrator:
         """
         while True:
             self.ctx.adb.wake()
-            self._run_accounts()
+            if self._ensure_game_running():
+                self._run_accounts()
+                self._maintain_finished_accounts()
+            else:
+                logger.error("多次尝试仍无法启动游戏，本轮跳过")
             if not self.config.schedule.enabled:
                 return
             delay = next_slot_delay(self.config.schedule)
@@ -164,42 +168,100 @@ class Orchestrator:
                         time.strftime("%H:%M", time.localtime(time.time() + delay)))
             time.sleep(delay)
 
+    def _ensure_game_running(self, timeout: float = 60.0) -> bool:
+        """确保游戏在前台并已加载；未启动则拉起，加载失败则强杀重试。"""
+        pkg = self.config.device.game_package
+        for attempt in range(3):
+            self.ctx.adb.wake()
+            current = self.ctx.adb.current_package()
+            if current == pkg:
+                logger.info("游戏已在前台")
+            else:
+                logger.info("游戏未在前台（当前 %s），启动 %s（第 %d 次）",
+                            current, pkg, attempt + 1)
+                self.ctx.adb.launch_app(pkg)
+            if self._wait_game_ready(timeout):
+                return True
+            logger.warning("游戏未在 %.0f 秒内就绪，强制重启重试", timeout)
+            self.ctx.adb.force_stop_app(pkg)
+            time.sleep(2.0)
+        return False
+
+    def _wait_game_ready(self, timeout: float) -> bool:
+        """等待画面落到某个可识别状态；顺带关掉“欢迎回来”弹窗。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            frame = self._grab_frame()
+            if frame is None:
+                time.sleep(1.0)
+                continue
+            state = self.ctx.classifier.classify(frame).state
+            if state.name not in ("UNKNOWN", "POPUP"):
+                logger.info("游戏已就绪，状态 %s", state.name)
+                return True
+            m = self.ctx.matcher.match(frame, "welcome_continue_btn",
+                                       threshold=0.90)
+            if m:
+                logger.info("关闭“欢迎回来”弹窗")
+                self.ctx.actions.tap(*m.center)
+                time.sleep(1.0)
+                continue
+            time.sleep(1.0)
+        return False
+
     def _run_accounts(self) -> None:
-        """多账号轮换：切号 → 更新战利品门槛 → 打满本账号场次 → 记录状态。"""
+        """多账号轮换：每个号都切过去读一次真实状态，再决定是否进攻。
+
+        不再根据 Redis 里的历史状态提前跳过账号——那会导致资源状态长期不更新；
+        每次都切换一次，靠 _loot_full/_record_account_state 用实时画面刷新数据。
+        """
         accounts = self.config.accounts
         names: list[str | None] = [None]
         if accounts.enabled and accounts.names:
             names = list(accounts.names)
 
         for name in names:
-            if name:
-                if self.ctx.store is not None:
-                    skip, reason = self.ctx.store.should_skip(
-                        name, valid_hours=accounts.skip_valid_hours)
-                    if skip:
-                        logger.info("账号 %s：%s，跳过本轮", name, reason)
-                        continue
-                th = self.switcher.switch_to(name)
-                if th:
-                    self.config.attack.town_hall_level = th
-                    self.ctx.store.set_th(name, th)
-                    logger.info("账号 %s：大本营 %d 级，战利品门槛 金币=%d 圣水=%d",
-                                name, th, self.config.attack.gold_threshold,
-                                self.config.attack.elixir_threshold)
-                else:
-                    # 切号失败时不能在原账号上继续，否则门槛/战绩都会算错
-                    logger.warning("切换账号 %s 失败，跳过本账号", name)
-                    continue
-                self.ctx.account_name = name
-                self.ctx.flags.clear()
+            self._process_account(name, self._session_attacks())
 
-            self.session = SessionControl(self._session_attacks())
-            logger.info("开始账号 %s 的进攻轮次（本账号 %d 场）",
-                        name or "当前账号", self.session.max_attacks)
-            self._run_session()
+    def _process_account(self, name: str | None,
+                         attacks: tuple[int, int]) -> None:
+        """切到账号（若指定）、跑指定场次、记录状态。"""
+        if name:
+            th = self.switcher.switch_to(name)
+            if th:
+                self.config.attack.town_hall_level = th
+                self.ctx.store.set_th(name, th)
+                logger.info("账号 %s：大本营 %d 级，战利品门槛 金币=%d 圣水=%d",
+                            name, th, self.config.attack.gold_threshold,
+                            self.config.attack.elixir_threshold)
+            else:
+                # 切号失败时不能在原账号上继续，否则门槛/战绩都会算错
+                logger.warning("切换账号 %s 失败，跳过本账号", name)
+                return
+            self.ctx.account_name = name
+            self.ctx.flags.clear()
 
-            if name and self.ctx.store is not None:
-                self._record_account_state(name)
+        self.session = SessionControl(attacks)
+        logger.info("开始账号 %s 的进攻轮次（本账号 %d 场）",
+                    name or "当前账号", self.session.max_attacks)
+        self._run_session()
+
+        if name and self.ctx.store is not None:
+            self._record_account_state(name)
+
+    def _maintain_finished_accounts(self) -> None:
+        """本轮结束后检查 Redis：有建筑已完成的账号，切过去升级并战斗一次。"""
+        accounts = self.config.accounts
+        if not (accounts.enabled and accounts.names and self.ctx.store is not None):
+            return
+        now = time.time()
+        for name in accounts.names:
+            finished = self.ctx.store.finished_buildings(name, now)
+            if not finished:
+                continue
+            logger.info("账号 %s 有 %d 个建筑已完成，切过去升级并战斗一次",
+                        name, len(finished))
+            self._process_account(name, (1, 1))
 
     def _session_attacks(self) -> tuple[int, int]:
         """账号模式使用固定场次（每个号打满即切），否则沿用随机区间。"""

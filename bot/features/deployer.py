@@ -29,7 +29,7 @@ class Deployer(Feature):
         frame = self.ctx.frames.get_latest()
         if frame is None or not self.ctx.flags.get("attack_accepted"):
             return False
-        # 找到对手后先有 30 秒开战倒计时，倒计时期间就能下兵，不必等它走完
+        # 对手预览页（开战倒计时）阶段即可下兵，不必等倒计时结束
         if self.ctx.classifier.classify(frame).state not in (GameState.BATTLE,
                                                             GameState.FIND_MATCH):
             return False

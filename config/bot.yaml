@@ -2,6 +2,7 @@ mode: run                     # run | debug：debug 输出 DEBUG 日志，并把
 
 device:
   serial: null                # null 表示自动取第一台设备
+  game_package: com.supercell.clashofclans  # 游戏包名：用于未启动时拉起/重启
   scrcpy_max_size: 1280       # 视频编码最大边长
   scrcpy_bit_rate: 8000000
   frame_buffer_size: 10
@@ -31,9 +32,9 @@ deploy:
   max_recenter: 3             # 底部边界被遮挡时，最多向下拖动地图的次数
 
 battle_end:
-  sample_interval: 3          # 摧毁率/战利品采样间隔（秒）
+  sample_interval: 5          # 摧毁率/战利品采样间隔（秒）
   stable_samples: 3           # 连续多少次采样摧毁率不变视为稳定
-  stall_seconds: 25           # 敌方资源无变化超过该时长则结束战斗
+  stall_seconds: 15           # 敌方资源无变化超过该时长则结束战斗
   history_size: 10            # 保留最近采样数
 
 upgrade:
