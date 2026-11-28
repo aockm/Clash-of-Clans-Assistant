@@ -18,6 +18,7 @@ class GameState(enum.Enum):
     FIND_MATCH = "find_match"        # 搜索到对手、待决策
     BATTLE = "battle"
     RESULTS = "results"
+    REWARD = "reward"                # 战后奖励：胜利之星奖励弹窗 / 宝箱 / 奖励卡
     CLAN_CHAT = "clan_chat"
     BUILDER_MENU = "builder_menu"
     BUILDING_PANEL = "building_panel"  # 建筑信息面板 / 升级确认框

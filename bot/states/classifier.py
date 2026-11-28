@@ -11,6 +11,11 @@ class StateClassifier:
         # 对手预览页会同时出现"结束战斗"和"下一个"，必须先判"下一个"才能把预览页和实战区分开
         (GameState.FIND_MATCH, "find_match_next_btn"),
         (GameState.BATTLE, "battle_end_battle_btn"),
+        # 战后奖励：胜利之星弹窗/宝箱盖在主村庄上，背景里的进攻按钮仍能匹配，
+        # 不先判奖励就会误点主村庄按钮
+        (GameState.REWARD, "loading_reward_chest"),
+        (GameState.REWARD, "star_bonus_collect_btn"),
+        (GameState.REWARD, "reward_card_continue_btn"),
         # 升级确认框 / 建筑升级列表：绿色按钮与结算按钮相似，必须排在 RESULTS 前面
         (GameState.BUILDING_PANEL, "upgrade_confirm_btn"),
         (GameState.BUILDING_PANEL, "builder_busy_dialog"),
@@ -30,6 +35,8 @@ class StateClassifier:
     # 升级确认框/列表标题同理，统一用 0.90 防止误判
     THRESHOLDS = {
         "results_return_home": 0.90,
+        "loading_reward_chest": 0.78,   # 宝箱图案随奖励档位变化，相似度只有 ~0.83
+        "reward_card_continue_btn": 0.85,
         "upgrade_confirm_btn": 0.90,
         "builder_menu_title": 0.90,
         "builder_busy_dialog": 0.90,

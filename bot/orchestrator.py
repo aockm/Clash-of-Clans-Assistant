@@ -15,6 +15,7 @@ from bot.features.attacker import Attacker
 from bot.features.account_switcher import AccountSwitcher
 from bot.features.deployer import Deployer
 from bot.features.finisher import Finisher
+from bot.features.reward import RewardCollector
 from bot.features.upgrader import Upgrader
 from bot.safety.randomizer import SafeActions
 from bot.safety.session_control import SessionControl
@@ -81,10 +82,11 @@ class Orchestrator:
         self.fallback_capture = FallbackCapture(adb)
         self.fallback_handler = FallbackHandler(self.ctx)
         self.session = SessionControl(config.safety.max_attacks_per_session)
-        self.switcher = AccountSwitcher(self.ctx, self._grab_frame)
+        self.reward = RewardCollector(self.ctx)
+        self.switcher = AccountSwitcher(self.ctx, self._grab_frame, self.reward)
 
-        # 升级优先：主村庄有可用建筑时先尝试升级，再进入进攻流程
-        self.features = [Upgrader(self.ctx), Attacker(self.ctx),
+        # 奖励优先：宝箱/胜利之星弹窗可能盖在任何画面上，先收掉再做别的
+        self.features = [self.reward, Upgrader(self.ctx), Attacker(self.ctx),
                          Deployer(self.ctx), Finisher(self.ctx)]
 
     def _grab_frame(self):
@@ -207,6 +209,10 @@ class Orchestrator:
             return
         self.fallback_handler.reset()
         if state == GameState.MAIN_VILLAGE:
+            if time.time() < self.ctx.flags.get("reward_grace_until", 0.0):
+                # 战后奖励弹窗（胜利之星/宝箱）会晚几秒才盖上来，先等它出现
+                return
+            self.ctx.flags.pop("reward_grace_until", None)
             self.ctx.flags["needs_home"] = False
             # 本账号场次已打完：只等回村收尾，不再开新的一轮搜索
             if (self.session.should_stop()

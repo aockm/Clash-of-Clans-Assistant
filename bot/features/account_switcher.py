@@ -64,8 +64,6 @@ class AccountSwitcher:
     ROW_TAP_X = 880                # 点击账号行的 x
     LIST_SWIPE_X = 1050            # 账号列表区域内滑动的 x
     BADGE = "switch_account_badge"
-    CHEST = "loading_reward_chest"  # 切号加载页的奖励宝箱（点一次给一次奖励）
-    REWARD_CONTINUE = "reward_continue_btn"  # 奖励卡片上的“继续”
 
     # 账号行内文字相对灰色徽标中心的偏移（视频坐标）
     NAME_X0, NAME_X1 = 720, 1064
@@ -74,12 +72,13 @@ class AccountSwitcher:
     TH_X0, TH_X1 = 736, 876
     TH_DY0, TH_DY1 = 40, 76
 
-    def __init__(self, ctx, frame_getter: Callable[[], np.ndarray | None]) -> None:
+    def __init__(self, ctx, frame_getter: Callable[[], np.ndarray | None],
+                 reward) -> None:
         self.ctx = ctx
         self._grab = frame_getter
+        self._reward = reward
         cfg = ctx.config.accounts
         self._names = cfg.names
-        self._reward_taps = cfg.reward_taps
         self._cache = _LevelCache(CACHE_PATH, cfg.th_cache_hours)
 
     def switch_to(self, name: str) -> int | None:
@@ -126,6 +125,8 @@ class AccountSwitcher:
         while time.time() < deadline:
             frame = self._grab()
             if frame is not None:
+                if self._reward.collect(frame):
+                    continue
                 m = self.ctx.matcher.match(frame, "welcome_continue_btn",
                                            threshold=0.90)
                 if m:
@@ -250,30 +251,11 @@ class AccountSwitcher:
         deadline = time.time() + timeout
         tapped_at = time.time()
         retried = False
-        chest_taps = 0
-        continue_taps = 0
         while time.time() < deadline:
             frame = self._grab()
             if frame is not None:
-                if chest_taps < self._reward_taps:
-                    chest = self.ctx.matcher.match(frame, self.CHEST,
-                                                   threshold=0.85)
-                    if chest:
-                        chest_taps += 1
-                        logger.info("加载页奖励宝箱，点击 %d/%d",
-                                    chest_taps, self._reward_taps)
-                        self.ctx.actions.tap(*chest.center)
-                        time.sleep(0.35)
-                        continue
-                if continue_taps < self._reward_taps * 2:
-                    btn = self.ctx.matcher.match(frame, self.REWARD_CONTINUE,
-                                                 threshold=0.88)
-                    if btn:
-                        continue_taps += 1
-                        logger.info("奖励卡片继续（第 %d 次）", continue_taps)
-                        self.ctx.actions.tap(*btn.center)
-                        time.sleep(0.5)
-                        continue
+                if self._reward.collect(frame):
+                    continue
                 m = self.ctx.matcher.match(frame, "welcome_continue_btn",
                                            threshold=0.90)
                 if m:

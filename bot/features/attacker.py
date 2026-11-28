@@ -1,8 +1,10 @@
 import logging
+import time
 
 import numpy as np
 
 from bot.features.base import Feature
+from bot.features.reward import REWARD_GRACE
 from bot.states.base import GameState
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,8 @@ class Attacker(Feature):
             self.ctx.flags["deployed"] = False
             self.ctx.flags["await_confirm"] = False
             self.ctx.flags["battle_history"] = []
+            # 回村后可能弹胜利之星奖励/宝箱，这段时间不算“已回村”
+            self.ctx.flags["reward_grace_until"] = time.time() + REWARD_GRACE
             self.ctx.actions.tap(*m.center)
             return True
         return False

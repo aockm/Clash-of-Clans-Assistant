@@ -14,8 +14,8 @@ class FallbackHandler(StateHandler):
 
     MAX_ATTEMPTS = 5
 
-    # 依次尝试：关闭 X、奖励/提示弹窗的“继续”
-    DISMISS_TEMPLATES = ("popup_close", "popup_continue_btn")
+    # 依次尝试：奖励/提示弹窗的“继续”
+    DISMISS_TEMPLATES = ("popup_continue_btn",)
 
     def __init__(self, ctx) -> None:
         super().__init__(ctx)
