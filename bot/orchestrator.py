@@ -1,7 +1,10 @@
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import cv2
 
 from bot.account_store import AccountStore
 from bot.config import Config
@@ -31,6 +34,24 @@ from bot.vision.template_matcher import TemplateMatcher
 logger = logging.getLogger(__name__)
 
 
+def next_slot_delay(cfg, now: float | None = None) -> float:
+    """距离下一个启动点还有多少秒。
+
+    启动点从当天 0 点起每 interval_minutes 分钟一个，再整体后移
+    “当天日期 % 10”分钟（day_offset），避免所有机器都在整点抢同一批对手。
+    """
+    now = time.time() if now is None else now
+    lt = time.localtime(now)
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    offset = (lt.tm_mday % 10) * 60 if cfg.day_offset else 0
+    interval = cfg.interval_minutes * 60
+    first = midnight + offset
+    if now < first:
+        return first - now
+    steps = int((now - first) // interval) + 1
+    return first + steps * interval - now
+
+
 @dataclass
 class GameContext:
     """贯穿各层的共享上下文。"""
@@ -53,8 +74,16 @@ class Orchestrator:
     """主调度器：装配各层，驱动 感知→分类→决策→执行 主循环。"""
 
     def __init__(self, config: Config) -> None:
-        logging.basicConfig(level=config.log_level,
+        level = logging.DEBUG if config.debug else config.log_level
+        logging.basicConfig(level=level,
                             format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+        if not config.debug:
+            # wetest.scrcpy 库自建 logger 并固定为 DEBUG，会绕过根 logger 的级别，
+            # 逐帧打印“Parsed image size”。run 模式下抬到 WARNING 静音掉。
+            scrcpy_logger = logging.getLogger("wetest.scrcpy")
+            scrcpy_logger.setLevel(logging.WARNING)
+            for h in scrcpy_logger.handlers:
+                h.setLevel(logging.WARNING)
         self.config = config
 
         frames = FrameBuffer(config.device.frame_buffer_size)
@@ -89,6 +118,17 @@ class Orchestrator:
         self.features = [self.reward, Upgrader(self.ctx), Attacker(self.ctx),
                          Deployer(self.ctx), Finisher(self.ctx)]
 
+        self._debug_dir = self._make_debug_dir() if config.debug else None
+        self._debug_seq = 0
+        self._debug_saved_at = 0.0
+
+    @staticmethod
+    def _make_debug_dir() -> Path:
+        path = Path("screenshots/debug") / time.strftime("%Y%m%d_%H%M%S")
+        path.mkdir(parents=True, exist_ok=True)
+        logger.info("debug 模式：画面存到 %s", path)
+        return path
+
     def _grab_frame(self):
         frame = self.ctx.frames.get_latest()
         if frame is None:
@@ -104,10 +144,25 @@ class Orchestrator:
         except Exception:
             logger.exception("scrcpy 启动失败，将回退到 adb screencap")
         try:
-            self._run_accounts()
+            self._run_rounds()
         finally:
             self.scrcpy.stop()
         logger.info("Session finished")
+
+    def _run_rounds(self) -> None:
+        """反复跑整轮：第一次立即开始，之后每到启动点开新一轮。
+
+        跑到启动点时如果还在跑，就让当前轮跑完，不中途重启。
+        """
+        while True:
+            self.ctx.adb.wake()
+            self._run_accounts()
+            if not self.config.schedule.enabled:
+                return
+            delay = next_slot_delay(self.config.schedule)
+            logger.info("本轮结束，等待 %.0f 分钟后启动下一轮（%s）", delay / 60,
+                        time.strftime("%H:%M", time.localtime(time.time() + delay)))
+            time.sleep(delay)
 
     def _run_accounts(self) -> None:
         """多账号轮换：切号 → 更新战利品门槛 → 打满本账号场次 → 记录状态。"""
@@ -202,6 +257,7 @@ class Orchestrator:
         if frame is None:
             frame = self.fallback_capture.capture()
         state = self.ctx.classifier.classify(frame).state
+        self._save_debug_frame(frame, state)
         if state.name in ("UNKNOWN", "POPUP"):
             # 升级面板/确认框切换期间会出现 UNKNOWN 帧，此时不要按弹窗兜底关闭
             if not self._upgrade_busy():
@@ -214,6 +270,8 @@ class Orchestrator:
                 return
             self.ctx.flags.pop("reward_grace_until", None)
             self.ctx.flags["needs_home"] = False
+            if self._loot_full(frame):
+                return
             # 本账号场次已打完：只等回村收尾，不再开新的一轮搜索
             if (self.session.should_stop()
                     and not self.ctx.flags.get("deployed")
@@ -228,3 +286,27 @@ class Orchestrator:
                     break
             except NotImplementedError:
                 continue
+
+    def _loot_full(self, frame) -> bool:
+        """金币和圣水都满了就不再进攻（留时间让援兵/工人慢慢用掉）。"""
+        ratio = self.config.accounts.loot_full_ratio
+        if not self.loot_meter.is_full(frame, ratio):
+            return False
+        if not self.ctx.flags.get("loot_full_stop"):
+            gold, elixir = self.loot_meter.ratios(frame)
+            self.ctx.flags["loot_full_stop"] = True
+            self.session.stop()
+            logger.info("资源已满（金币 %.0f%% / 圣水 %.0f%%，阈值 %.0f%%），本账号不再进攻",
+                        gold * 100, elixir * 100, ratio * 100)
+        return True
+
+    def _save_debug_frame(self, frame, state: GameState) -> None:
+        if self._debug_dir is None:
+            return
+        now = time.time()
+        if now - self._debug_saved_at < 1.0:
+            return
+        self._debug_saved_at = now
+        self._debug_seq += 1
+        name = f"{self._debug_seq:05d}_{state.name}.jpg"
+        cv2.imwrite(str(self._debug_dir / name), frame)

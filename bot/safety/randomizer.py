@@ -15,12 +15,14 @@ class SafeActions:
         self._jitter = jitter_px
         self._delay = delay_range
 
-    def tap(self, x: int, y: int) -> None:
+    def tap(self, x: int, y: int, pause: bool = True) -> None:
+        """pause=False 用于连续下兵这类需要快速连点的场景。"""
         dx, dy = self._mapper.to_device(x, y)
         dx += random.randint(-self._jitter, self._jitter)
         dy += random.randint(-self._jitter, self._jitter)
         self._adb.tap(dx, dy)
-        time.sleep(random.uniform(*self._delay))
+        if pause:
+            time.sleep(random.uniform(*self._delay))
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration: float) -> None:
         sx, sy = self._mapper.to_device(x1, y1)

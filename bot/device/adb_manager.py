@@ -26,3 +26,8 @@ class AdbManager:
     def screen_size(self) -> tuple[int, int]:
         w, h = self.device.window_size()
         return w, h
+
+    def wake(self) -> None:
+        """唤醒并解锁屏幕：定时启动间隔较长，设备可能已经熄屏。"""
+        self.device.shell("input keyevent KEYCODE_WAKEUP")
+        self.device.shell("wm dismiss-keyguard")

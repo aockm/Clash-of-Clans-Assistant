@@ -10,6 +10,7 @@ class DeviceConfig:
     scrcpy_max_size: int = 1280
     scrcpy_bit_rate: int = 8_000_000
     frame_buffer_size: int = 10
+    game_package: str = "com.supercell.clashofclans"  # 启动/重启游戏用的包名
 
 
 @dataclass
@@ -99,6 +100,13 @@ class RedisConfig:
 
 
 @dataclass
+class ScheduleConfig:
+    enabled: bool = False
+    interval_minutes: int = 90   # 启动点间隔：从 0 点起每 90 分钟一个启动点
+    day_offset: bool = True      # 启动点再偏移“当天日期 % 10”分钟，错开整点
+
+
+@dataclass
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
@@ -108,7 +116,9 @@ class Config:
     upgrade: UpgradeConfig = field(default_factory=UpgradeConfig)
     accounts: AccountConfig = field(default_factory=AccountConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
+    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     templates_dir: Path = Path("assets/templates")
+    debug: bool = False          # debug 模式：DEBUG 日志 + 每帧画面存到 screenshots/debug/
     log_level: str = "INFO"
 
 
@@ -135,8 +145,11 @@ def load_config(path: str | Path) -> Config:
         cfg.accounts = AccountConfig(**a)
     if r := raw.get("redis"):
         cfg.redis = RedisConfig(**r)
+    if s := raw.get("schedule"):
+        cfg.schedule = ScheduleConfig(**s)
     if p := raw.get("paths", {}).get("templates_dir"):
         cfg.templates_dir = Path(p)
     if l := raw.get("logging", {}).get("level"):
         cfg.log_level = l
+    cfg.debug = str(raw.get("mode", "run")).lower() == "debug"
     return cfg

@@ -34,6 +34,9 @@ class Attacker(Feature):
         if state == GameState.ARMY_SETUP:
             return self._confirm_army(frame)
         if state == GameState.FIND_MATCH:
+            # 开战倒计时里已经开始下兵，别再点“下一个”
+            if self.ctx.flags.get("deployed"):
+                return False
             return self._judge_opponent(frame)
         if state == GameState.RESULTS:
             return self._return_home(frame)

@@ -23,12 +23,15 @@ class Deployer(Feature):
     # 手指上移会带着地图内容一起上移，把基地从底部抬到画面中部
     RECENTER_START_Y = 320
     RECENTER_DURATION = 0.6
+    RAPID_SETTLE = 0.25   # 连点一轮后等帧缓冲追上再判断卡牌是否耗尽
 
     def run(self) -> bool:
         frame = self.ctx.frames.get_latest()
         if frame is None or not self.ctx.flags.get("attack_accepted"):
             return False
-        if self.ctx.classifier.classify(frame).state != GameState.BATTLE:
+        # 找到对手后先有 30 秒开战倒计时，倒计时期间就能下兵，不必等它走完
+        if self.ctx.classifier.classify(frame).state not in (GameState.BATTLE,
+                                                            GameState.FIND_MATCH):
             return False
         return self._deploy_all(frame)
 
@@ -130,10 +133,11 @@ class Deployer(Feature):
 
     def _tap_until_empty(self, card: tuple[int, int],
                          points: list[tuple[int, int]], max_rounds: int) -> None:
-        """每轮把所有边界点各点一次（一次点出一个兵），卡牌空了就停。"""
+        """卡牌选定后会一直保持选中，连点部署点即可连续下兵；卡牌空了就停。"""
         for r in range(max_rounds):
             for pt in points:
-                self.ctx.actions.tap(*pt)
+                self.ctx.actions.tap(*pt, pause=False)
+            time.sleep(self.RAPID_SETTLE)
             frame = self.ctx.frames.get_latest()
             if frame is None or not card_present(frame, card):
                 logger.info("卡牌已耗尽，共 %d 轮", r + 1)

@@ -1,3 +1,5 @@
+mode: run                     # run | debug：debug 输出 DEBUG 日志，并把画面存到 screenshots/debug/
+
 device:
   serial: null                # null 表示自动取第一台设备
   scrcpy_max_size: 1280       # 视频编码最大边长
@@ -50,6 +52,7 @@ accounts:
     - NingYaoSword
     - OriginalALiang
     - SolidCuiCHan
+    - MudBottleAlley
   attacks_per_account: 3      # 每个账号打几场后切换（0 表示沿用 safety 的随机区间）
   reward_taps: 5              # 切号加载页出现宝箱奖励时连续点击次数
   th_cache_hours: 168         # 大本营等级缓存有效期（7 天），过期后重新识别
@@ -62,6 +65,11 @@ redis:                        # 账号状态（大本营等级/在建建筑完�
   port: 6379
   db: 0
   prefix: coc
+
+schedule:                     # 定时启动：打完一轮后，等到下一个启动点再开下一轮
+  enabled: true
+  interval_minutes: 90        # 启动点间隔（分钟），从 0 点起算
+  day_offset: true            # 启动点再偏移“当天日期 % 10”分钟，错开整点
 
 logging:
   level: INFO
