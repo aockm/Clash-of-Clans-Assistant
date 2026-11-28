@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=1.24",
     "pytesseract>=0.3.10",
     "pyyaml>=6.0",
+    "redis>=5.0",
     "av>=11.0",
     "wetest-scrcpy>=0.4.0",
 ]

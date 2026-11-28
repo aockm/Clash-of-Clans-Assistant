@@ -29,6 +29,8 @@ class Upgrader(Feature):
                   ("currency_elixir", "elixir"),
                   ("currency_gem", "gem"))
     ICON_ROI = (1180, 60, 64, 490)   # 列表货币图标列（视频坐标 x, y, w, h）
+    CLOCK_ICON = "upgrade_clock_icon"  # 在建/升级耗时行右侧的秒表图标
+    CLOCK_ROI = (1198, 36, 60, 490)    # 秒表图标列
     CLOSE_INTERVAL = 1.2             # 连续点关闭的最小间隔（秒）
 
     def run(self) -> bool:
@@ -67,7 +69,8 @@ class Upgrader(Feature):
 
         # 已回到主村庄：清理上一轮列表状态，恢复其它功能
         for key in ("upgrade_done", "upgrade_await_at",
-                    "upgrade_close_at", "upgrade_tried"):
+                    "upgrade_close_at", "upgrade_tried",
+                    "upgrade_buildings_read", "upgrade_menu_seen_at"):
             flags.pop(key, None)
 
         if now - flags.get("upgrade_nobusy_at", 0.0) < cfg.nobuilder_cooldown:
@@ -90,6 +93,8 @@ class Upgrader(Feature):
         flags = self.ctx.flags
         cfg = self.ctx.config.upgrade
         flags["upgrade_menu_at"] = 0.0
+
+        self._read_buildings(frame, now)
 
         if disabled or flags.get("upgrade_done"):
             return self._close_menu(frame, now)
@@ -114,6 +119,7 @@ class Upgrader(Feature):
             return True
 
         self._fail("列表中没有可升级的建筑")
+        flags["upgrade_exhausted"] = True
         return self._close_menu(frame, now)
 
     def _handle_confirm(self, frame: np.ndarray) -> bool:
@@ -125,6 +131,7 @@ class Upgrader(Feature):
         if self.ctx.matcher.match(frame, self.BUSY_TITLE, threshold=0.90):
             flags["upgrade_nobusy_at"] = now
             flags["upgrade_done"] = now
+            flags["upgrade_exhausted"] = True
             flags.pop("upgrade_await_at", None)
             logger.info("所有工人都忙，暂停升级")
             if now - flags.get("upgrade_close_at", 0.0) >= self.CLOSE_INTERVAL:
@@ -142,6 +149,7 @@ class Upgrader(Feature):
             self.ctx.actions.tap(*m.center)
             flags["upgrade_done"] = now
             flags["upgrade_failures"] = 0
+            flags["upgrade_exhausted"] = False
             flags["upgrade_last_try"] = now
             flags.pop("upgrade_await_at", None)
             logger.info("已点击确认升级")
@@ -153,6 +161,41 @@ class Upgrader(Feature):
             if x:
                 self.ctx.actions.tap(*x.center)
         return True
+
+    def _read_buildings(self, frame: np.ndarray, now: float) -> None:
+        """读取列表中在建建筑的剩余时间，换算成完成时间戳写入账号状态。"""
+        flags = self.ctx.flags
+        if flags.get("upgrade_buildings_read"):
+            return
+        seen = flags.get("upgrade_menu_seen_at")
+        if not seen:
+            flags["upgrade_menu_seen_at"] = now
+            return
+        if now - seen < 0.5:     # 等列表动画稳定
+            return
+        flags["upgrade_buildings_read"] = True
+
+        name = getattr(self.ctx, "account_name", None)
+        store = getattr(self.ctx, "store", None)
+        if not name or store is None:
+            return
+
+        icons = self.ctx.matcher.match_all(frame, self.CLOCK_ICON,
+                                           roi=self.CLOCK_ROI, threshold=0.85)
+        buildings: list[dict] = []
+        for m in icons:
+            cx, cy = m.center
+            seconds = self.ctx.ocr.read_duration(
+                frame, (cx - 72, cy - 12, 60, 24))
+            if not seconds:
+                continue
+            finish = now + seconds
+            buildings.append({"finish_at": round(finish, 1)})
+            logger.info("在建建筑剩余 %d 秒（预计 %s 完成）", seconds,
+                        time.strftime("%m-%d %H:%M", time.localtime(finish)))
+        if buildings:
+            store.set_buildings(name, buildings)
+            logger.info("账号 %s 在建建筑 %d 座", name, len(buildings))
 
     def _find_rows(self, frame: np.ndarray) -> list[tuple[int, str]]:
         """按 y 从上到下返回列表中各行的货币图标位置与类型。"""

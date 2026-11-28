@@ -10,6 +10,10 @@ class SessionControl:
         self._attacks_done = 0
         self._start = time.time()
 
+    @property
+    def max_attacks(self) -> int:
+        return self._max_attacks
+
     def record_attack(self) -> None:
         self._attacks_done += 1
 

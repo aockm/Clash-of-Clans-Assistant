@@ -82,7 +82,20 @@ class AccountConfig:
     enabled: bool = False
     # 轮流使用的 Supercell ID 账号（按顺序），名称需与切换ID页显示一致
     names: list[str] = field(default_factory=list)
+    attacks_per_account: int = 3   # 每个账号打完多少场后切下一个
+    reward_taps: int = 5           # 切号加载页出现奖励宝箱时连续点击次数
     th_cache_hours: float = 168.0  # 大本营等级识别结果有效期（默认 7 天）
+    loot_full_ratio: float = 0.95  # 资源条填充比例达到该值视为“资源已满”
+    skip_valid_hours: float = 6.0  # “资源满且无可升级”状态的有效期，过期后重试该账号
+
+
+@dataclass
+class RedisConfig:
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 6379
+    db: int = 0
+    prefix: str = "coc"
 
 
 @dataclass
@@ -94,6 +107,7 @@ class Config:
     battle_end: BattleEndConfig = field(default_factory=BattleEndConfig)
     upgrade: UpgradeConfig = field(default_factory=UpgradeConfig)
     accounts: AccountConfig = field(default_factory=AccountConfig)
+    redis: RedisConfig = field(default_factory=RedisConfig)
     templates_dir: Path = Path("assets/templates")
     log_level: str = "INFO"
 
@@ -119,6 +133,8 @@ def load_config(path: str | Path) -> Config:
         cfg.upgrade = UpgradeConfig(**u)
     if a := raw.get("accounts"):
         cfg.accounts = AccountConfig(**a)
+    if r := raw.get("redis"):
+        cfg.redis = RedisConfig(**r)
     if p := raw.get("paths", {}).get("templates_dir"):
         cfg.templates_dir = Path(p)
     if l := raw.get("logging", {}).get("level"):

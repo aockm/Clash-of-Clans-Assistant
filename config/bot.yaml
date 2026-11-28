@@ -45,10 +45,23 @@ upgrade:
 
 accounts:
   enabled: true
-  names:                      # 按顺序轮换；每个账号打满 max_attacks_per_session 后切下一个
+  names:                      # 按顺序轮换；每个账号打满场次后切下一个
     - Murphy11111
     - NingYaoSword
+    - OriginalALiang
+    - SolidCuiCHan
+  attacks_per_account: 3      # 每个账号打几场后切换（0 表示沿用 safety 的随机区间）
+  reward_taps: 5              # 切号加载页出现宝箱奖励时连续点击次数
   th_cache_hours: 168         # 大本营等级缓存有效期（7 天），过期后重新识别
+  loot_full_ratio: 0.95       # 资源条填充≥该比例视为资源已满
+  skip_valid_hours: 6         # “资源已满且无可升级”时跳过该账号的有效期，过期后重试
+
+redis:                        # 账号状态（大本营等级/在建建筑完成时间等）
+  enabled: true
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+  prefix: coc
 
 logging:
   level: INFO
