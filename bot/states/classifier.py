@@ -11,6 +11,8 @@ class StateClassifier:
         # 对手预览页会同时出现"结束战斗"和"下一个"，必须先判"下一个"才能把预览页和实战区分开
         (GameState.FIND_MATCH, "find_match_next_btn"),
         (GameState.BATTLE, "battle_end_battle_btn"),
+        # 兵放完后左下角按钮会变成“放弃”，认不出来会把整场战斗当成未识别画面
+        (GameState.BATTLE, "battle_giveup_btn"),
         # 战后奖励：胜利之星弹窗/宝箱盖在主村庄上，背景里的进攻按钮仍能匹配，
         # 不先判奖励就会误点主村庄按钮
         (GameState.REWARD, "loading_reward_chest"),
@@ -44,6 +46,7 @@ class StateClassifier:
         "reward_card_continue_btn": 0.85,
         "upgrade_confirm_btn": 0.90,
         "upgrade_dialog_close": 0.95,
+        "battle_giveup_btn": 0.85,
         "builder_menu_title": 0.90,
         "builder_menu_army_title": 0.90,
         "builder_busy_dialog": 0.90,

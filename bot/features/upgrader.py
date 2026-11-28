@@ -309,11 +309,17 @@ class Upgrader(Feature):
             return True
 
         if now - await_at > cfg.confirm_timeout:
-            self._fail("确认框中没有升级按钮")
+            # 面板打开了但升级按钮点不了：最常见是资源不够（按钮变灰，绿色模板匹配不上）。
+            # 这只是这一行升不了，回列表试下一行就行，不能算失败——
+            # 否则三行凑不出资源就把整个升级流程判死，后面能升的也不升了
+            flags.pop("upgrade_await_at", None)
             x = self.ctx.matcher.match(frame, self.DIALOG_CLOSE, threshold=0.90)
             if x:
                 flags["upgrade_close_at"] = now
+                logger.info("该建筑升级按钮不可用（多半资源不足），换下一个")
                 self.ctx.actions.tap(*x.center)
+            else:
+                self._fail("确认框既没有升级按钮也没有关闭按钮")
         return True
 
     def _skip_placement(self, frame: np.ndarray) -> bool:

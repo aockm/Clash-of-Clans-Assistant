@@ -17,6 +17,7 @@ class FallbackHandler(StateHandler):
 
     MAX_ATTEMPTS = 5
     RESTART_AFTER = 45.0   # 连续 UNKNOWN 超过该时长（秒）则重启游戏
+    BATTLE_RESTART_AFTER = 190.0  # 战斗中（已落兵）的容忍时长：一场最多 3 分钟
     RESTART_WAIT = 30.0    # 重启后等待游戏加载的时长，期间不再次重启
 
     # 依次尝试：奖励/提示弹窗的“继续”
@@ -43,13 +44,18 @@ class FallbackHandler(StateHandler):
                 self.ctx.actions.tap(*m.center)
                 self._unknown_since = None
                 return None
-        # 加载/动画中会连续出现 UNKNOWN；超过阈值说明游戏可能崩了/被切后台，重启它
+        # 加载/动画中会连续出现 UNKNOWN；超过阈值说明游戏可能崩了/被切后台，重启它。
+        # 但战斗已经落兵时不能重启——那会把整场战斗直接废掉，而一场最多 3 分钟，
+        # 老老实实等它打完更划算
+        in_battle = bool(self.ctx.flags.get("deployed"))
+        limit = self.BATTLE_RESTART_AFTER if in_battle else self.RESTART_AFTER
         if self._unknown_since is None:
             self._unknown_since = now
-        elif now - self._unknown_since >= self.RESTART_AFTER:
+        elif now - self._unknown_since >= limit:
             self._dump_unknown(frame)
-            logger.warning("连续 %.0f 秒未识别出游戏画面，重启游戏",
-                           now - self._unknown_since)
+            logger.warning("连续 %.0f 秒未识别出游戏画面（%s），重启游戏",
+                           now - self._unknown_since,
+                           "战斗中，等战斗结束超时" if in_battle else "非战斗")
             self._restart_game()
             self._unknown_since = None
             self._restart_until = now + self.RESTART_WAIT
