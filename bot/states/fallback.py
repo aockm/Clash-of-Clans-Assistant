@@ -1,6 +1,8 @@
 import logging
 import time
+from pathlib import Path
 
+import cv2
 import numpy as np
 
 from bot.states.base import GameState, StateHandler
@@ -45,12 +47,22 @@ class FallbackHandler(StateHandler):
         if self._unknown_since is None:
             self._unknown_since = now
         elif now - self._unknown_since >= self.RESTART_AFTER:
+            self._dump_unknown(frame)
             logger.warning("连续 %.0f 秒未识别出游戏画面，重启游戏",
                            now - self._unknown_since)
             self._restart_game()
             self._unknown_since = None
             self._restart_until = now + self.RESTART_WAIT
         return None
+
+    def _dump_unknown(self, frame: np.ndarray) -> None:
+        """把认不出来的画面存到 logs/，方便事后查是什么页面。"""
+        path = Path("logs") / f"unknown_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+        try:
+            cv2.imwrite(str(path), frame)
+            logger.warning("未识别画面已保存：%s", path)
+        except Exception:
+            logger.exception("保存未识别画面失败")
 
     def _restart_game(self) -> None:
         pkg = self.ctx.config.device.game_package

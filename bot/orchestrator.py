@@ -420,6 +420,13 @@ class Orchestrator:
                 return
             self.ctx.flags.pop("reward_grace_until", None)
             self.ctx.flags["needs_home"] = False
+            if self.ctx.flags.get("deployed"):
+                # 人已经在主村庄了，说明战斗早结束（结算页可能没认出来/游戏被重启过），
+                # 这几个标志不清掉 _run_session 的循环条件一直成立，会永远卡在本号
+                logger.warning("已回主村庄但战斗标志还在，按战斗已结束清理")
+                self.ctx.flags["deployed"] = False
+                self.ctx.flags["await_confirm"] = False
+                self.ctx.flags["battle_history"] = []
             if self._loot_full(frame):
                 return
             # 本账号场次已打完：只等回村收尾，不再开新的一轮搜索
