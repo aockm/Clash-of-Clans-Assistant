@@ -27,11 +27,19 @@ class Deployer(Feature):
 
     def run(self) -> bool:
         frame = self.ctx.frames.get_latest()
-        if frame is None or not self.ctx.flags.get("attack_accepted"):
+        if frame is None:
             return False
         # 对手预览页（开战倒计时）阶段即可下兵，不必等倒计时结束
-        if self.ctx.classifier.classify(frame).state not in (GameState.BATTLE,
-                                                            GameState.FIND_MATCH):
+        state = self.ctx.classifier.classify(frame).state
+        if state not in (GameState.BATTLE, GameState.FIND_MATCH):
+            return False
+        if not self.ctx.flags.get("attack_accepted"):
+            # 落兵结束后 attack_accepted 会被清掉，那种情况不算异常
+            if (not self.ctx.flags.get("deployed")
+                    and not self.ctx.flags.get("deploy_skip_logged")):
+                self.ctx.flags["deploy_skip_logged"] = True
+                logger.warning("战斗中但 attack_accepted 未置位，不会下兵（%s）",
+                               state.name)
             return False
         return self._deploy_all(frame)
 
@@ -52,21 +60,41 @@ class Deployer(Feature):
 
         cards = occupied_cards(frame, cfg)
         if not cards:
-            logger.warning("没有可用兵种卡牌")
+            logger.warning("没有可用兵种卡牌，卡槽蓝底占用：%s",
+                           self._slot_report(frame, cfg))
             return False
 
-        logger.info("开始部署：兵种 %d 张，边界点 %d 个", len(cards), len(points))
+        logger.info("开始部署：兵种 %d 张 %s，边界点 %d 个", len(cards), cards,
+                    len(points))
         for center in cards:
             self.ctx.actions.tap(*center)
             self._tap_until_empty(center, points, cfg.max_rounds)
 
         self.ctx.flags["attack_accepted"] = False
+        self.ctx.flags.pop("deploy_skip_logged", None)
         self.ctx.flags["next_attempts"] = 0
         self.ctx.flags["deployed"] = True
         self.ctx.flags["battle_zoomed"] = False
         self.ctx.flags["battle_history"] = []
         self.ctx.flags["last_sample"] = 0.0
         return True
+
+    def _slot_report(self, frame: np.ndarray, cfg) -> str:
+        """逐个卡槽打印“蓝色底占比”，用于判断卡牌位置是否配对。"""
+        from bot.vision.card_reader import CARD_BLUE_LOWER, CARD_BLUE_UPPER, CARD_SIZE
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        w, h = CARD_SIZE
+        items: list[str] = []
+        for i in range(cfg.card_slot_count):
+            cx = cfg.card_slot_start[0] + i * cfg.card_slot_pitch
+            cy = cfg.card_slot_start[1]
+            roi = hsv[max(0, cy - h // 2):cy + h // 2, max(0, cx - w // 2):cx + w // 2]
+            if roi.size == 0:
+                items.append(f"{i}:{cx},{cy}=越界")
+                continue
+            blue = cv2.inRange(roi, CARD_BLUE_LOWER, CARD_BLUE_UPPER)
+            items.append(f"{i}:{cx},{cy}={cv2.countNonZero(blue) / blue.size:.2f}")
+        return " ".join(items)
 
     def _zoom_out(self, frame: np.ndarray) -> np.ndarray:
         """进入敌方村庄先双指捏合缩小地图，确保整个村庄可见再做部署。"""

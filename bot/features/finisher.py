@@ -18,8 +18,6 @@ class Finisher(Feature):
 
     name = "finisher"
 
-    ROI_GOLD = (86, 68, 60, 26)
-    ROI_ELIXIR = (86, 100, 45, 26)
     ROI_DESTROY = (1170, 414, 46, 32)
 
     CONFIRM_TIMEOUT = 10.0
@@ -44,9 +42,8 @@ class Finisher(Feature):
         self.ctx.flags["last_sample"] = now
 
         destroy = self._read_destroy(frame)
-        gp = self.ctx.ocr.read_number(frame, self.ROI_GOLD) or 0
-        ep = self.ctx.ocr.read_number(frame, self.ROI_ELIXIR) or 0
-        loot = gp + ep
+        gp, ep = self.ctx.ocr.read_loot(frame)
+        loot = (gp or 0) + (ep or 0)
 
         history = self.ctx.flags.setdefault("battle_history", [])
         history.append((destroy, loot))
@@ -100,6 +97,10 @@ class Finisher(Feature):
             return True
 
         if time.time() - self.ctx.flags.get("await_confirm_at", 0) > self.CONFIRM_TIMEOUT:
-            logger.warning("未等到放弃确认框，取消等待")
+            # 确认框没等到（战斗可能已经自己结算完），战斗状态一并清掉，
+            # 否则 deployed 会一直挂着，攻击流程会当成“还在打”而不开新一场
+            logger.warning("未等到放弃确认框，取消等待并清理战斗状态")
             self.ctx.flags["await_confirm"] = False
+            self.ctx.flags["deployed"] = False
+            self.ctx.flags["battle_history"] = []
         return True

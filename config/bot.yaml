@@ -54,7 +54,10 @@ accounts:
     - OriginalALiang
     - SolidCuiCHan
     - MudBottleAlley
-  attacks_per_account: 3      # 每个账号打几场后切换（0 表示沿用 safety 的随机区间）
+    - SolidCuiChan
+    - LiuXianYang
+    - ClassyQiJingChun
+  attacks_per_account: 1      # 每个账号打几场后切换（0 表示沿用 safety 的随机区间）
   reward_taps: 5              # 切号加载页出现宝箱奖励时连续点击次数
   th_cache_hours: 168         # 大本营等级缓存有效期（7 天），过期后重新识别
   loot_full_ratio: 0.95       # 资源条填充≥该比例视为资源已满

@@ -18,8 +18,7 @@ class Attacker(Feature):
 
     name = "attacker"
 
-    ROI_GOLD = (86, 70, 62, 24)      # 对手预览页“可获得的战利品”金币数值
-    ROI_ELIXIR = (86, 100, 58, 24)   # 同上，圣水数值
+    # 战利品栏位置不固定（敌方资源有两种排布），交给 ocr.read_loot 按图标定位
 
     def run(self) -> bool:
         frame = self.ctx.frames.get_latest()
@@ -52,6 +51,7 @@ class Attacker(Feature):
             self.ctx.flags["deployed"] = False
             self.ctx.flags["await_confirm"] = False
             self.ctx.flags["battle_history"] = []
+            self.ctx.flags.pop("deploy_skip_logged", None)
             # 回村后可能弹胜利之星奖励/宝箱，这段时间不算“已回村”
             self.ctx.flags["reward_grace_until"] = time.time() + REWARD_GRACE
             self.ctx.actions.tap(*m.center)
@@ -84,23 +84,35 @@ class Attacker(Feature):
         if self.ctx.flags.get("attack_accepted"):
             return False
 
-        gold = self.ctx.ocr.read_number(frame, self.ROI_GOLD) or 0
-        elixir = self.ctx.ocr.read_number(frame, self.ROI_ELIXIR) or 0
+        gold, elixir = self.ctx.ocr.read_loot(frame)
+        gold, elixir = gold or 0, elixir or 0
         attack_cfg = self.ctx.config.attack
         logger.info("对手战利品：金币=%d 圣水=%d（门槛 金币%d/圣水%d，本营%d级）",
                     gold, elixir, attack_cfg.gold_threshold,
                     attack_cfg.elixir_threshold, attack_cfg.town_hall_level)
 
         if gold == 0 and elixir == 0:
-            # 多半是 OCR 没读到（界面遮挡/动画中），不做“下一个”以免白花金币
-            logger.warning("战利品读取为 0，本轮不做决策")
-            return False
+            # 预览页有 30 秒倒计时，倒计时一到会自动开战；一直读不出来就别干等，
+            # 否则会白白开一场一个兵都不下的战斗
+            first = self.ctx.flags.setdefault("loot_unread_at", time.time())
+            wait = time.time() - first
+            if wait < 3.0:
+                logger.warning("战利品读取为 0，先等一下再判定（%.0f 秒）", wait)
+                return False
+            logger.warning("战利品连续 %.0f 秒读不出来，直接换下一个对手", wait)
+            self.ctx.flags.pop("loot_unread_at", None)
+            return self._next_opponent(frame)
+        self.ctx.flags.pop("loot_unread_at", None)
 
         if gold >= attack_cfg.gold_threshold or elixir >= attack_cfg.elixir_threshold:
             logger.info("资源达标，进入战斗")
             self.ctx.flags["attack_accepted"] = True
             return True
 
+        return self._next_opponent(frame)
+
+    def _next_opponent(self, frame: np.ndarray) -> bool:
+        attack_cfg = self.ctx.config.attack
         attempts = self.ctx.flags.get("next_attempts", 0)
         if attempts >= attack_cfg.max_next_attempts:
             logger.warning("已换满 %d 个对手，结束搜索", attack_cfg.max_next_attempts)

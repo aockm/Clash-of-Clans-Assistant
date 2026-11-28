@@ -40,6 +40,10 @@ class Upgrader(Feature):
     # 时长文字在秒表图标左侧，给足宽度让 OCR 自己找紧包围盒
     DURATION_BAND = (140, 15, 128, 30)
     CLOSE_INTERVAL = 1.2               # 连续点关闭的最小间隔（秒）
+    # 新建建筑行点了会进“放置模式”：建造列表消失、只剩主村庄 HUD，
+    # 画面上多出一个红底白叉的取消按钮。当前策略是不放新建筑，点取消跳过。
+    PLACE_WAIT = 1.2                   # 点行后等确认框的最短时间（秒）
+    PLACE_GIVE_UP = 4.0                # 找不到取消按钮就放弃这一行的时限（秒）
 
     def run(self) -> bool:
         cfg = self.ctx.config.upgrade
@@ -54,6 +58,15 @@ class Upgrader(Feature):
         disabled = (self.ctx.flags.get("upgrade_failures", 0)
                     >= cfg.max_failures)
         if state == GameState.MAIN_VILLAGE:
+            # 放置模式下状态同样被判成主村庄，必须先识别出来，否则会误点“建造”
+            flags = self.ctx.flags
+            await_at = flags.get("upgrade_await_at", 0.0)
+            if await_at and time.time() - await_at < self.PLACE_WAIT:
+                return True      # 刚点完行，等确认框/放置画面稳定
+            if time.time() - flags.get("upgrade_place_cancel_at", 0.0) < 1.5:
+                return True
+            if self._skip_placement(frame):
+                return True
             return False if disabled else self._open_menu(frame)
         if state == GameState.BUILDER_MENU:
             return self._handle_menu(frame, disabled)
@@ -95,6 +108,16 @@ class Upgrader(Feature):
             logger.info("账号 %s 未找到建造按钮，跳过建造列表刷新", name)
             return False
 
+        # 上一轮可能停在新建建筑的放置模式，先取消，否则后面点“建造”会点不动
+        box = self._placement_cancel_btn(frame)
+        if box:
+            logger.info("账号 %s 停留在新建建筑放置模式，先取消", name)
+            self.ctx.actions.tap(int(box[0] + box[2] / 2), int(box[1] + box[3] / 2))
+            time.sleep(1.0)
+            latest = self.ctx.frames.get_latest()   # 取消后画面会重画，取新帧
+            if latest is not None:
+                frame = latest
+
         self.ctx.actions.tap(*button.center)
         if not self._wait_state(GameState.BUILDER_MENU, timeout):
             logger.warning("账号 %s 点击建造后未出现列表", name)
@@ -106,6 +129,9 @@ class Upgrader(Feature):
         workers = self._read_workers(frame)
         if workers:
             logger.info("账号 %s 空闲工人 %d/%d", name, workers[0], workers[1])
+        else:
+            logger.warning("账号 %s 工人胶囊识别失败（%s），按弹窗兜底判断",
+                           name, self.WORKER_CHIP_ROI)
 
         if self._close_menu_now():
             logger.info("账号 %s 建造列表已关闭", name)
@@ -144,9 +170,11 @@ class Upgrader(Feature):
         if menu_at:
             self._fail("点击建造后未出现建筑升级列表")
 
-        # 已回到主村庄：清理上一轮列表状态，恢复其它功能
+        # 已回到主村庄：清理上一轮列表状态，恢复其它功能。
+        # upgrade_tried 故意保留：新建建筑行点了不会弹确认框，
+        # 保留已试过的行号才能在重开列表后继续试下一行，而不是原地打转。
         for key in ("upgrade_done", "upgrade_await_at",
-                    "upgrade_close_at", "upgrade_tried",
+                    "upgrade_close_at",
                     "upgrade_buildings_read", "upgrade_menu_seen_at",
                     "upgrade_army_checked"):
             flags.pop(key, None)
@@ -194,8 +222,14 @@ class Upgrader(Feature):
             if await_at:
                 if now - await_at <= cfg.confirm_timeout:
                     return True
-                # 这一行没弹出确认框（资源不足/只是提示），继续试下一行
+                # 点完这一行既没弹升级确认框、列表也还在：多半是没点中。
+                # 不要按返回键（可能弹“确定退出游戏”），直接换下一行
                 flags.pop("upgrade_await_at", None)
+                logger.info("该行没有弹出升级确认框（列表仍在），跳过 y=%d",
+                            flags.get("upgrade_await_last_y", 0))
+                # 新建建筑会占掉一次冷却，这里缩短，避免每行白等 20 秒
+                flags["upgrade_last_try"] = now - cfg.cooldown + 2.0
+                return True
 
             for y, kind in self._find_rows(frame):
                 if kind == "gem":
@@ -205,7 +239,9 @@ class Upgrader(Feature):
                     continue
                 tried.append(y)
                 flags["upgrade_await_at"] = now
-                logger.info("点击建筑列表行 y=%d（%s）", y, kind)
+                flags["upgrade_await_last_y"] = y
+                logger.info("点击建筑列表行 y=%d（%s，已试 %d 行）", y, kind,
+                            len(tried))
                 self.ctx.actions.tap(cfg.row_x, y)
                 return True
 
@@ -236,6 +272,15 @@ class Upgrader(Feature):
             return True
 
         if flags.get("upgrade_done"):
+            # 确认过了面板还挂在屏幕上（例如“需要 N 级实验室”这类升不了的提示），
+            # 一直停在这里会把整个升级流程卡死，超时后主动收起来
+            if (now - flags["upgrade_done"] > cfg.confirm_timeout
+                    and now - flags.get("upgrade_close_at", 0.0) >= self.CLOSE_INTERVAL):
+                x = self.ctx.matcher.match(frame, self.DIALOG_CLOSE, threshold=0.90)
+                if x:
+                    flags["upgrade_close_at"] = now
+                    logger.info("确认后面板仍未关闭，主动关闭")
+                    self.ctx.actions.tap(*x.center)
             return True
 
         m = self.ctx.matcher.match(frame, self.CONFIRM_BTN, threshold=0.90)
@@ -246,15 +291,84 @@ class Upgrader(Feature):
             flags["upgrade_exhausted"] = False
             flags["upgrade_last_try"] = now
             flags.pop("upgrade_await_at", None)
+            # 列表会因这次升级而重排，之前的行号不能再用
+            flags.pop("upgrade_tried", None)
             logger.info("已点击确认升级")
             return True
 
-        if now - flags.get("upgrade_await_at", now) > cfg.confirm_timeout:
+        await_at = flags.get("upgrade_await_at")
+        if await_at is None:
+            # 不是本轮点出来的面板（比如上个会话遗留的“正在将XX升至N级”信息页），
+            # 上面没有升级按钮，直接收起就行，不计入失败次数
+            if now - flags.get("upgrade_close_at", 0.0) >= self.CLOSE_INTERVAL:
+                x = self.ctx.matcher.match(frame, self.DIALOG_CLOSE, threshold=0.90)
+                if x:
+                    flags["upgrade_close_at"] = now
+                    logger.info("面板没有升级按钮（多半是升级中信息页），收起")
+                    self.ctx.actions.tap(*x.center)
+            return True
+
+        if now - await_at > cfg.confirm_timeout:
             self._fail("确认框中没有升级按钮")
             x = self.ctx.matcher.match(frame, self.DIALOG_CLOSE, threshold=0.90)
             if x:
+                flags["upgrade_close_at"] = now
                 self.ctx.actions.tap(*x.center)
         return True
+
+    def _skip_placement(self, frame: np.ndarray) -> bool:
+        """点完列表行却停在主村庄 = 进了新建建筑的放置模式，点取消跳过这一行。
+
+        放置模式下按返回键会弹“确定退出游戏”，可能把游戏关掉，所以只认那个
+        红底白叉的取消按钮；找不到就过一会儿放弃，绝不去点返回键。
+        """
+        flags = self.ctx.flags
+        now = time.time()
+        await_at = flags.get("upgrade_await_at", 0.0)
+        if not await_at or now - await_at < self.PLACE_WAIT:
+            return False
+
+        box = self._placement_cancel_btn(frame)
+        if not box:
+            if now - await_at < self.PLACE_GIVE_UP:
+                return False
+            flags.pop("upgrade_await_at", None)
+            logger.info("点行后 %.1f 秒既无确认框也无放置按钮，跳过该行",
+                        now - await_at)
+            return True
+
+        x, y, w, h = box
+        self.ctx.actions.tap(int(x + w / 2), int(y + h / 2))
+        flags.pop("upgrade_await_at", None)
+        flags["upgrade_place_cancel_at"] = now
+        # 这一行白跑一趟，缩短冷却，马上重开列表试下一行
+        flags["upgrade_last_try"] = now - self.ctx.config.upgrade.cooldown + 2.0
+        logger.info("新建建筑放置模式：已点取消跳过 y=%d",
+                    flags.get("upgrade_await_last_y", 0))
+        return True
+
+    def _placement_cancel_btn(self, frame: np.ndarray) -> tuple | None:
+        """放置模式里的红底白叉取消按钮；位置随镜头缩放浮动，只能按颜色找。"""
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, (0, 140, 140), (10, 255, 255))
+        mask |= cv2.inRange(hsv, (170, 140, 140), (180, 255, 255))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        white = cv2.inRange(frame, (210, 210, 210), (255, 255, 255))
+        best = None
+        for c in cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                  cv2.CHAIN_APPROX_SIMPLE)[0]:
+            if cv2.contourArea(c) < 300:
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            if not (0.75 <= w / h <= 1.3) or not 18 <= w <= 140:
+                continue
+            # 按钮里是白色叉；红色网格、红点之类几乎没有白
+            ratio = white[y:y + h, x:x + w].mean() / 255.0
+            if not 0.08 <= ratio <= 0.32:
+                continue
+            if best is None or w > best[2]:
+                best = (x, y, w, h)
+        return best
 
     def _read_buildings(self, frame: np.ndarray, name: str | None) -> None:
         """读列表里在建建筑的剩余时间，换算完成时间戳写入账号状态。"""

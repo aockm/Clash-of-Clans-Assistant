@@ -64,6 +64,16 @@ class OcrEngine:
     CONFIG = '--psm 7 -c tessedit_char_whitelist=0123456789,'
     RATIO_CONFIG = '--psm 7 -c tessedit_char_whitelist=0123456789/'
     TEXT_THRESHOLD = 195      # 提取“亮色文字”的灰度阈值
+    NUMBER_CUTS = (200, 210, 220)   # 数字 OCR 的亮色阈值投票组
+    # 左上角战利品栏：金币是亮黄圆币、圣水是紫色水滴，数字紧跟在图标右侧。
+    # 敌方资源栏有两种排布（带“2倍”奖励标记 / 不带），位置会整体错开，
+    # 所以先用图标定位再框数字；找不到图标时退回下面这套固定 ROI。
+    LOOT_AREA = (30, 30, 140, 220)   # 只在左上角这块区域找图标（x, y, w, h）
+    LOOT_ICONS = {
+        "gold": ((18, 150, 190), (35, 255, 255)),
+        "elixir": ((125, 120, 140), (165, 255, 255)),
+    }
+    LOOT_ROI = {"gold": (88, 68, 78, 26), "elixir": (88, 104, 78, 26)}
 
     def __init__(self) -> None:
         try:
@@ -74,17 +84,75 @@ class OcrEngine:
 
     def read_number(self, frame: np.ndarray,
                     roi: tuple[int, int, int, int]) -> int | None:
+        """读亮色数字（战利品/摧毁率）：多组高亮阈值各识别一次再投票。
+
+        游戏里的数字是亮黄/纯白配深描边，但底色深浅差别很大（预览页浅绿草地、
+        战斗页深色地面）。单用 OTSU 会被大面积背景带偏，实测固定高亮阈值更稳。
+        """
         roi = self._clip(frame, roi)
         if roi is None:
             return None
         x, y, w, h = roi
-        crop = frame[y:y + h, x:x + w]
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        text = pytesseract.image_to_string(bw, config=self.CONFIG).strip()
-        digits = "".join(ch for ch in text if ch.isdigit())
-        return int(digits) if digits else None
+        gray = cv2.cvtColor(frame[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
+        votes: Counter[int] = Counter()
+        first: int | None = None
+        for cut in self.NUMBER_CUTS:
+            mask = (gray > cut).astype(np.uint8) * 255
+            mask = cv2.resize(mask, None, fx=6, fy=6,
+                              interpolation=cv2.INTER_CUBIC)
+            mask = cv2.copyMakeBorder(255 - mask, 20, 20, 20, 20,
+                                      cv2.BORDER_CONSTANT, value=255)
+            text = pytesseract.image_to_string(mask, config=self.CONFIG)
+            digits = "".join(ch for ch in text if ch.isdigit())
+            if not digits:
+                continue
+            value = int(digits)
+            votes[value] += 1
+            if first is None:
+                first = value
+        if not votes:
+            return None
+        best, count = votes.most_common(1)[0]
+        return best if count >= 2 else first
+
+    def read_loot(self, frame: np.ndarray) -> tuple[int | None, int | None]:
+        """读左上角敌方资源栏，返回（金币, 圣水）。
+
+        先按图标定位数字，能兼容“带/不带 2 倍奖励标记”两种排布；
+        图标没认出来时退回固定 ROI，两个数值互不影响。
+        """
+        result = []
+        for key in ("gold", "elixir"):
+            roi = self._loot_roi(frame, key) or self.LOOT_ROI[key]
+            result.append(self.read_number(frame, roi))
+        return result[0], result[1]
+
+    def _loot_roi(self, frame: np.ndarray,
+                  key: str) -> tuple[int, int, int, int] | None:
+        """在战利品栏里找资源图标，返回其右侧数字区域。"""
+        x0, y0, w0, h0 = self.LOOT_AREA
+        area = frame[y0:y0 + h0, x0:x0 + w0]
+        if area.size == 0:
+            return None
+        hsv = cv2.cvtColor(area, cv2.COLOR_BGR2HSV)
+        lo, hi = self.LOOT_ICONS[key]
+        mask = cv2.inRange(hsv, np.array(lo), np.array(hi))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        best = None
+        for c in cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                  cv2.CHAIN_APPROX_SIMPLE)[0]:
+            if cv2.contourArea(c) < 150:
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            if not (0.6 <= w / h <= 1.6):
+                continue
+            # 战利品栏的图标贴着左边，靠右的都是背景装饰
+            if best is None or x < best[0]:
+                best = (x, y, w, h)
+        if best is None:
+            return None
+        x, y, w, h = best
+        return (x0 + x + w + 2, y0 + y - 2, 80, h + 4)
 
     def read_text(self, frame: np.ndarray,
                   roi: tuple[int, int, int, int],

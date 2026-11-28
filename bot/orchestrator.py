@@ -20,6 +20,7 @@ from bot.features.deployer import Deployer
 from bot.features.finisher import Finisher
 from bot.features.reward import RewardCollector
 from bot.features.upgrader import Upgrader
+from bot.run_log import start_run_log
 from bot.safety.randomizer import SafeActions
 from bot.safety.session_control import SessionControl
 from bot.states.classifier import StateClassifier
@@ -73,6 +74,8 @@ class GameContext:
 class Orchestrator:
     """主调度器：装配各层，驱动 感知→分类→决策→执行 主循环。"""
 
+    HOME_BTN = (64, 520)   # 搜索页左下角“回营”按钮（视频坐标）
+
     def __init__(self, config: Config) -> None:
         level = logging.DEBUG if config.debug else config.log_level
         logging.basicConfig(level=level,
@@ -85,6 +88,11 @@ class Orchestrator:
             for h in scrcpy_logger.handlers:
                 h.setLevel(logging.WARNING)
         self.config = config
+        self.run_log_path = start_run_log(level)
+        logger.info("本次运行日志：%s", self.run_log_path)
+        logger.debug("配置：%r", config)
+        self._last_state = None
+        self._last_state_log_at = 0.0
 
         frames = FrameBuffer(config.device.frame_buffer_size)
         adb = AdbManager(config.device.serial)
@@ -262,8 +270,49 @@ class Orchestrator:
                     name or "当前账号", self.session.max_attacks)
         self._run_session()
 
+        if self.ctx.flags.get("loot_full_stop"):
+            # 资源满了不能进攻，但正该把资源花在升级上，否则这个账号永远不升级
+            self._upgrade_sweep()
+
         if name and self.ctx.store is not None:
             self._record_account_state(name)
+
+    def _upgrade_sweep(self, seconds: float = 180.0) -> None:
+        """资源已满时的收尾：跑升级流程，直到没得升/没空闲工人或超时。"""
+        if not self.config.upgrade.enabled:
+            return
+        logger.info("资源已满，转入升级流程（最多 %.0f 秒）", seconds)
+        deadline = time.time() + seconds
+        last_state, stuck_since = None, 0.0
+        while time.time() < deadline:
+            flags = self.ctx.flags
+            if flags.get("upgrade_exhausted") or flags.get("upgrade_nobusy_at"):
+                logger.info("升级已收尾：%s", "无可升级建筑"
+                            if flags.get("upgrade_exhausted") else "没有空闲工人")
+                return
+            frame = self.ctx.frames.get_latest()
+            if frame is not None:
+                state = self.ctx.classifier.classify(frame).state
+                if state != last_state:
+                    logger.info("升级流程状态：%s → %s",
+                                getattr(last_state, "name", "-"), state.name)
+                    last_state = state
+                if state in (GameState.MAIN_VILLAGE, GameState.BUILDER_MENU,
+                             GameState.BUILDING_PANEL):
+                    stuck_since = 0.0
+                else:
+                    # 新建建筑行点下去会进放置模式，这里兜底退出，别干等
+                    stuck_since = stuck_since or time.time()
+                    if time.time() - stuck_since > 3.0:
+                        logger.info("升级流程停在 %s，按返回键退出", state.name)
+                        self.ctx.adb.key_back()
+                        stuck_since = 0.0
+            try:
+                self.upgrader.run()
+            except Exception:
+                logger.exception("升级流程异常")
+            time.sleep(0.2)
+        logger.info("升级流程达到 %.0f 秒上限，结束", seconds)
 
     def _maintain_finished_accounts(self) -> None:
         """本轮结束后检查 Redis：有建筑已完成的账号，切过去升级并战斗一次。"""
@@ -330,12 +379,35 @@ class Orchestrator:
         return any(self.ctx.flags.get(k) for k in
                    ("upgrade_menu_at", "upgrade_await_at", "upgrade_done"))
 
+    def _flags_brief(self) -> str:
+        """关键流程标志的快照，日志里用来还原“为什么没下兵/没开打”。"""
+        keys = ("attack_accepted", "deployed", "await_confirm", "needs_home",
+                "next_attempts", "battle_zoomed", "upgrade_done",
+                "upgrade_await_at", "upgrade_menu_at")
+        return "{" + ", ".join(f"{k}={self.ctx.flags.get(k)}" for k in keys
+                               if self.ctx.flags.get(k)) + "}"
+
     def _tick(self) -> None:
         frame = self.ctx.frames.get_latest()
         if frame is None:
             frame = self.fallback_capture.capture()
         state = self.ctx.classifier.classify(frame).state
         self._save_debug_frame(frame, state)
+        if state != self._last_state:
+            logger.info("状态切换：%s → %s｜flags=%s",
+                        getattr(self._last_state, "name", "-"), state.name,
+                        self._flags_brief())
+            self._last_state = state
+            self._last_state_log_at = time.time()
+        elif time.time() - self._last_state_log_at >= 2.0:
+            # 每 2 秒留一条心跳，足够还原现场又不至于把日志刷爆
+            logger.debug("状态维持 %s｜flags=%s", state.name,
+                         self._flags_brief())
+            self._last_state_log_at = time.time()
+        # “暂时无法攻击此村庄”会在搜索页出现，回村后还要靠这个标志收尾，
+        # 所以放在状态分发之前、所有状态下都检查
+        if self._attack_unavailable(frame):
+            return
         if state.name in ("UNKNOWN", "POPUP"):
             # 升级面板/确认框切换期间会出现 UNKNOWN 帧，此时不要按弹窗兜底关闭
             if not self._upgrade_busy():
@@ -364,6 +436,43 @@ class Orchestrator:
                     break
             except NotImplementedError:
                 continue
+
+    def _attack_unavailable(self, frame) -> bool:
+        """搜索页提示“暂时无法攻击此村庄”：点回营退出搜索，本号到此为止，换下一个号。
+
+        这个号被封了可攻击状态，再搜也搜不到，硬等只会白白耗时间。
+        """
+        flags = self.ctx.flags
+        tip = self.ctx.matcher.match(frame, "attack_blocked_tip", threshold=0.85)
+        started = flags.get("attack_blocked")
+        if not tip and not started:
+            return False
+        if not tip:
+            if not flags.get("attack_blocked_done"):
+                flags["attack_blocked_done"] = True
+                logger.info("已离开“无法攻击此村庄”提示页，本账号结束并切换下一个")
+            self.session.stop()
+            # _run_session 的退出条件还看着这几个标志，这里不一起清会一直转圈，
+            # 永远轮不到下一个账号
+            flags["deployed"] = False
+            flags["await_confirm"] = False
+            flags["needs_home"] = False
+            return True
+        now = time.time()
+        if not started:
+            logger.warning("提示“暂时无法攻击此村庄”，点回营并切换到下一个账号")
+            flags["attack_blocked"] = now
+        if now - flags.get("attack_blocked_at", 0.0) >= 2.0:
+            flags["attack_blocked_at"] = now
+            self.ctx.actions.tap(*self.HOME_BTN)
+        if now - flags["attack_blocked"] > 15.0:
+            logger.warning("“无法攻击”提示已持续 %.0f 秒，仍结束本账号",
+                           now - flags["attack_blocked"])
+            self.session.stop()
+            flags["deployed"] = False
+            flags["await_confirm"] = False
+            flags["needs_home"] = False
+        return True
 
     def _loot_full(self, frame) -> bool:
         """金币和圣水都满了就不再进攻（留时间让援兵/工人慢慢用掉）。"""

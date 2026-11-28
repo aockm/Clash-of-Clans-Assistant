@@ -19,7 +19,12 @@ class StateClassifier:
         # 升级确认框 / 建筑升级列表：绿色按钮与结算按钮相似，必须排在 RESULTS 前面
         (GameState.BUILDING_PANEL, "upgrade_confirm_btn"),
         (GameState.BUILDING_PANEL, "builder_busy_dialog"),
+        # 已经开建/开升的信息页（如“正在将雷电法术升至3级”）没有确认按钮，
+        # 只剩面板右上角一个 X，不认出来就会一直卡着
+        (GameState.BUILDING_PANEL, "upgrade_dialog_close"),
         (GameState.BUILDER_MENU, "builder_menu_title"),
+        # 军队升级页标题不同，不认识就会一直卡在这个面板上
+        (GameState.BUILDER_MENU, "builder_menu_army_title"),
         (GameState.RESULTS, "results_return_home"),
         (GameState.ARMY_SETUP, "army_setup_attack_btn"),
         (GameState.ATTACK_MENU, "attack_menu_find_match_btn"),
@@ -38,7 +43,9 @@ class StateClassifier:
         "loading_reward_chest": 0.78,   # 宝箱图案随奖励档位变化，相似度只有 ~0.83
         "reward_card_continue_btn": 0.85,
         "upgrade_confirm_btn": 0.90,
+        "upgrade_dialog_close": 0.95,
         "builder_menu_title": 0.90,
+        "builder_menu_army_title": 0.90,
         "builder_busy_dialog": 0.90,
         "settings_supercell_bar": 0.90,
         "switch_account_title": 0.90,
