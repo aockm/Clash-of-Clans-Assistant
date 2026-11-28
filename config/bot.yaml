@@ -27,7 +27,7 @@ deploy:
   card_slot_pitch: 81         # 相邻卡牌中心间距
   card_slot_count: 11         # 卡槽总数
   boundary_margin: 40         # 红区外扩距离，部署点落在红区外
-  max_rounds: 4               # 每个兵种最多投放轮次（每轮把所有边界点各点一次）
+  max_rounds: 7               # 每个兵种最多投放轮次（每轮把所有边界点各点一次）
   map_bottom: 365             # 卡牌栏起始 y，边界线低于此值会被遮挡
   max_recenter: 3             # 底部边界被遮挡时，最多向下拖动地图的次数
 
@@ -69,7 +69,7 @@ redis:                        # 账号状态（大本营等级/在建建筑完�
 
 schedule:                     # 定时启动：打完一轮后，等到下一个启动点再开下一轮
   enabled: true
-  interval_minutes: 90        # 启动点间隔（分钟），从 0 点起算
+  interval_minutes: 15        # 启动点间隔（分钟），从 0 点起算
   day_offset: true            # 启动点再偏移“当天日期 % 10”分钟，错开整点
 
 logging:

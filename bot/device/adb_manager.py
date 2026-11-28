@@ -32,6 +32,10 @@ class AdbManager:
         self.device.shell("input keyevent KEYCODE_WAKEUP")
         self.device.shell("wm dismiss-keyguard")
 
+    def sleep(self) -> None:
+        """熄屏锁屏（KEYCODE_SLEEP 只会关屏，不会像电源键那样反向点亮）。"""
+        self.device.shell("input keyevent KEYCODE_SLEEP")
+
     def current_package(self) -> str | None:
         """当前前台应用包名；读取失败返回 None。"""
         try:

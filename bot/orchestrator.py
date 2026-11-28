@@ -115,7 +115,8 @@ class Orchestrator:
         self.switcher = AccountSwitcher(self.ctx, self._grab_frame, self.reward)
 
         # 奖励优先：宝箱/胜利之星弹窗可能盖在任何画面上，先收掉再做别的
-        self.features = [self.reward, Upgrader(self.ctx), Attacker(self.ctx),
+        self.upgrader = Upgrader(self.ctx)
+        self.features = [self.reward, self.upgrader, Attacker(self.ctx),
                          Deployer(self.ctx), Finisher(self.ctx)]
 
         self._debug_dir = self._make_debug_dir() if config.debug else None
@@ -161,12 +162,24 @@ class Orchestrator:
                 self._maintain_finished_accounts()
             else:
                 logger.error("多次尝试仍无法启动游戏，本轮跳过")
+            self._release_device()
             if not self.config.schedule.enabled:
                 return
             delay = next_slot_delay(self.config.schedule)
             logger.info("本轮结束，等待 %.0f 分钟后启动下一轮（%s）", delay / 60,
                         time.strftime("%H:%M", time.localtime(time.time() + delay)))
             time.sleep(delay)
+
+    def _release_device(self) -> None:
+        """本轮收工：退出游戏并锁屏，等下一个启动点再唤醒重开。"""
+        pkg = self.config.device.game_package
+        logger.info("本轮结束，退出游戏并锁屏")
+        try:
+            self.ctx.adb.force_stop_app(pkg)
+            time.sleep(1.0)
+            self.ctx.adb.sleep()
+        except Exception:
+            logger.exception("退出游戏/锁屏失败")
 
     def _ensure_game_running(self, timeout: float = 60.0) -> bool:
         """确保游戏在前台并已加载；未启动则拉起，加载失败则强杀重试。"""
@@ -240,6 +253,9 @@ class Orchestrator:
                 return
             self.ctx.account_name = name
             self.ctx.flags.clear()
+            # 每次切号后都主动读一次在建建筑：资源已满时主循环会提前返回，
+            # 不在这里读就会一直沿用上一轮的陈旧数据
+            self.upgrader.refresh_building_state()
 
         self.session = SessionControl(attacks)
         logger.info("开始账号 %s 的进攻轮次（本账号 %d 场）",

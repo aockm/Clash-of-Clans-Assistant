@@ -164,7 +164,22 @@ class AccountSwitcher:
                                                 threshold=0.90)):
                     # 列表滚动后“切换ID”标题可能不可见，用左侧 Supercell ID 标识兜底
                     self.ctx.actions.tap(*self.SWITCH_CLOSE)
+                elif state in (GameState.BUILDER_MENU, GameState.BUILDING_PANEL):
+                    # 上一轮可能停在建造列表/升级确认框，先关掉才能点大本营图标
+                    if not self._dismiss_panel(frame):
+                        self.ctx.adb.key_back()
             time.sleep(0.6)
+        return False
+
+    def _dismiss_panel(self, frame) -> bool:
+        """关掉建造列表或升级确认框，成功点击返回 True。"""
+        for name in ("builder_menu_close", "upgrade_dialog_close",
+                     "builder_busy_close", "popup_close"):
+            m = self.ctx.matcher.match(frame, name, threshold=0.90)
+            if m:
+                self.ctx.actions.tap(*m.center)
+                time.sleep(0.8)
+                return True
         return False
 
     def _wait_state(self, state: GameState, timeout: float) -> bool:

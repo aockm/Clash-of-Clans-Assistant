@@ -1,6 +1,7 @@
 import logging
 import time
 
+import cv2
 import numpy as np
 
 from bot.features.base import Feature
@@ -10,11 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class Upgrader(Feature):
-    """建筑升级：主村庄点右下角“建造” → 建筑和英雄列表 → 点列表行 → 确认升级。
+    """建筑/军队升级：主村庄点右下角“建造” → 列表 → 点行 → 确认。
 
     列表行从右侧货币图标动态识别（列表会随升级进度重排，不能写死坐标）。
-    宝石行直接跳过；点行后没弹确认框（资源不足/该行只是提示）就换下一行；
-    弹出“所有建筑工人都很忙”时关闭弹窗并暂停升级一段时间。
+    底部“建筑工人 x/y”胶囊表示剩余/总工人数，x 为 0 才说明没有空闲工人；
+    第二个“军队升级”标签页用于法术/兵种升级，全部升满时会显示“已完成全部升级”。
     """
 
     name = "upgrader"
@@ -28,10 +29,17 @@ class Upgrader(Feature):
     CURRENCIES = (("currency_gold", "gold"),
                   ("currency_elixir", "elixir"),
                   ("currency_gem", "gem"))
-    ICON_ROI = (1180, 60, 64, 490)   # 列表货币图标列（视频坐标 x, y, w, h）
-    CLOCK_ICON = "upgrade_clock_icon"  # 在建/升级耗时行右侧的秒表图标
-    CLOCK_ROI = (1198, 36, 60, 490)    # 秒表图标列
-    CLOSE_INTERVAL = 1.2             # 连续点关闭的最小间隔（秒）
+    ICON_ROI = (1180, 60, 64, 490)     # 列表货币图标列（视频坐标 x, y, w, h）
+    ARMY_ICON_ROI = (1060, 40, 220, 500)  # 军队升级页的货币图标列更靠左
+    CLOCK_ICON = "upgrade_clock_icon"  # 仅在“升级中”的行上出现（可升级行是普通时钟）
+    CLOCK_ROI = (1180, 24, 100, 530)   # 秒表图标列
+    # 底部“建筑工人 x/y”与“军队升级 x/y”两个胶囊，x 为剩余可用数
+    WORKER_CHIP_ROI = (890, 534, 88, 26)
+    ARMY_TAB = (1007, 551)
+    ARMY_DONE_ROI = (864, 240, 368, 160)   # 军队升级页“已完成全部升级”提示
+    # 时长文字在秒表图标左侧，给足宽度让 OCR 自己找紧包围盒
+    DURATION_BAND = (140, 15, 128, 30)
+    CLOSE_INTERVAL = 1.2               # 连续点关闭的最小间隔（秒）
 
     def run(self) -> bool:
         cfg = self.ctx.config.upgrade
@@ -55,6 +63,75 @@ class Upgrader(Feature):
             return self._handle_confirm(frame)
         return False
 
+    def refresh_building_state(self, timeout: float = 15.0) -> bool:
+        """切号后立刻打开建造列表，把在建建筑与工人数写进账号状态。
+
+        主循环在资源已满时会直接返回，升级流程根本不会跑，
+        所以必须在这里主动读一次，保证每轮每个账号的 Redis 数据都被刷新。
+        """
+        name = getattr(self.ctx, "account_name", None)
+        if not name or self.ctx.store is None:
+            return False
+
+        # 状态分类需要连续多帧确认，这里多试几次再判定是否在主村庄
+        frame, button, state = None, None, None
+        for _ in range(10):
+            frame = self.ctx.frames.get_latest()
+            if frame is not None:
+                state = self.ctx.classifier.classify(frame).state
+                if state == GameState.MAIN_VILLAGE:
+                    button = self.ctx.matcher.match(frame, self.BUILD_BTN,
+                                                    threshold=0.90)
+                    if button:
+                        break
+            time.sleep(0.3)
+        if frame is None:
+            return False
+        if state != GameState.MAIN_VILLAGE:
+            logger.info("账号 %s 不在主村庄（%s），跳过建造列表刷新",
+                        name, getattr(state, "name", "-"))
+            return False
+        if not button:
+            logger.info("账号 %s 未找到建造按钮，跳过建造列表刷新", name)
+            return False
+
+        self.ctx.actions.tap(*button.center)
+        if not self._wait_state(GameState.BUILDER_MENU, timeout):
+            logger.warning("账号 %s 点击建造后未出现列表", name)
+            return False
+        time.sleep(0.6)          # 等列表滚动/淡入稳定再读秒表
+        frame = self.ctx.frames.get_latest()
+
+        self._read_buildings(frame, name)
+        workers = self._read_workers(frame)
+        if workers:
+            logger.info("账号 %s 空闲工人 %d/%d", name, workers[0], workers[1])
+
+        if self._close_menu_now():
+            logger.info("账号 %s 建造列表已关闭", name)
+        return True
+
+    def _close_menu_now(self) -> bool:
+        """关掉建造列表并用状态确认真的退出了，必要时用返回键兜底。"""
+        for attempt in range(2):
+            frame = self.ctx.frames.get_latest()
+            if frame is None:
+                continue
+            close = self.ctx.matcher.match(frame, self.MENU_CLOSE, threshold=0.90)
+            if close:
+                self.ctx.actions.tap(*close.center)
+            for _ in range(8):
+                time.sleep(0.3)
+                frame = self.ctx.frames.get_latest()
+                if frame is None:
+                    continue
+                if self.ctx.classifier.classify(frame).state != GameState.BUILDER_MENU:
+                    return True
+            logger.info("建造列表未关闭，重试（%d/2）", attempt + 1)
+        self.ctx.adb.key_back()
+        time.sleep(0.8)
+        return False
+
     def _open_menu(self, frame: np.ndarray) -> bool:
         """主村庄：点右下角“建造”，随后等列表出现。"""
         now = time.time()
@@ -70,7 +147,8 @@ class Upgrader(Feature):
         # 已回到主村庄：清理上一轮列表状态，恢复其它功能
         for key in ("upgrade_done", "upgrade_await_at",
                     "upgrade_close_at", "upgrade_tried",
-                    "upgrade_buildings_read", "upgrade_menu_seen_at"):
+                    "upgrade_buildings_read", "upgrade_menu_seen_at",
+                    "upgrade_army_checked"):
             flags.pop(key, None)
 
         if now - flags.get("upgrade_nobusy_at", 0.0) < cfg.nobuilder_cooldown:
@@ -94,31 +172,47 @@ class Upgrader(Feature):
         cfg = self.ctx.config.upgrade
         flags["upgrade_menu_at"] = 0.0
 
-        self._read_buildings(frame, now)
+        if not flags.get("upgrade_buildings_read"):
+            seen = flags.get("upgrade_menu_seen_at")
+            if not seen:
+                flags["upgrade_menu_seen_at"] = now
+            elif now - seen >= 0.5:      # 等列表动画稳定
+                flags["upgrade_buildings_read"] = True
+                self._read_buildings(frame, getattr(self.ctx, "account_name", None))
 
         if disabled or flags.get("upgrade_done"):
             return self._close_menu(frame, now)
 
-        await_at = flags.get("upgrade_await_at", 0.0)
-        if await_at:
-            if now - await_at <= cfg.confirm_timeout:
-                return True
-            # 这一行没弹出确认框（资源不足/只是提示），继续试下一行
-            flags.pop("upgrade_await_at", None)
+        # 底部工人胶囊：剩余 0 就没有空闲工人，不必再逐行试点
+        workers = self._read_workers(frame)
+        if workers and workers[0] == 0:
+            flags["upgrade_nobusy_at"] = now
+            logger.info("工人胶囊 %d/%d：没有空闲工人，暂停建筑升级",
+                        workers[0], workers[1])
+        else:
+            await_at = flags.get("upgrade_await_at", 0.0)
+            if await_at:
+                if now - await_at <= cfg.confirm_timeout:
+                    return True
+                # 这一行没弹出确认框（资源不足/只是提示），继续试下一行
+                flags.pop("upgrade_await_at", None)
 
-        for y, kind in self._find_rows(frame):
-            if kind == "gem":
-                continue
-            tried = flags.setdefault("upgrade_tried", [])
-            if any(abs(y - t) <= 8 for t in tried):
-                continue
-            tried.append(y)
-            flags["upgrade_await_at"] = now
-            logger.info("点击建筑列表行 y=%d（%s）", y, kind)
-            self.ctx.actions.tap(cfg.row_x, y)
+            for y, kind in self._find_rows(frame):
+                if kind == "gem":
+                    continue
+                tried = flags.setdefault("upgrade_tried", [])
+                if any(abs(y - t) <= 8 for t in tried):
+                    continue
+                tried.append(y)
+                flags["upgrade_await_at"] = now
+                logger.info("点击建筑列表行 y=%d（%s）", y, kind)
+                self.ctx.actions.tap(cfg.row_x, y)
+                return True
+
+        # 建筑这边没得做，接着看“军队升级”页（法术/兵种，不吃建筑工人）
+        if self._try_army_upgrade():
             return True
 
-        self._fail("列表中没有可升级的建筑")
         flags["upgrade_exhausted"] = True
         return self._close_menu(frame, now)
 
@@ -162,53 +256,125 @@ class Upgrader(Feature):
                 self.ctx.actions.tap(*x.center)
         return True
 
-    def _read_buildings(self, frame: np.ndarray, now: float) -> None:
-        """读取列表中在建建筑的剩余时间，换算成完成时间戳写入账号状态。"""
-        flags = self.ctx.flags
-        if flags.get("upgrade_buildings_read"):
-            return
-        seen = flags.get("upgrade_menu_seen_at")
-        if not seen:
-            flags["upgrade_menu_seen_at"] = now
-            return
-        if now - seen < 0.5:     # 等列表动画稳定
-            return
-        flags["upgrade_buildings_read"] = True
-
-        name = getattr(self.ctx, "account_name", None)
+    def _read_buildings(self, frame: np.ndarray, name: str | None) -> None:
+        """读列表里在建建筑的剩余时间，换算完成时间戳写入账号状态。"""
         store = getattr(self.ctx, "store", None)
         if not name or store is None:
             return
 
         icons = self.ctx.matcher.match_all(frame, self.CLOCK_ICON,
                                            roi=self.CLOCK_ROI, threshold=0.85)
+        if not icons:
+            # 列表里没有任何“升级中”的行：清空记录，避免陈旧数据反复触发维护
+            store.set_buildings(name, [])
+            logger.info("账号 %s 当前没有在建建筑", name)
+            return
+
+        shot, sx, sy = self._native_shot(frame)
+        now = time.time()
         buildings: list[dict] = []
         for m in icons:
-            cx, cy = m.center
+            cx, cy = int(m.center[0] * sx), int(m.center[1] * sy)
+            bw, bh, bwl, bhh = self.DURATION_BAND
             seconds = self.ctx.ocr.read_duration(
-                frame, (cx - 72, cy - 12, 60, 24))
+                shot, (cx - bw, cy - bh, bwl, bhh))
             if not seconds:
                 continue
             finish = now + seconds
             buildings.append({"finish_at": round(finish, 1)})
             logger.info("在建建筑剩余 %d 秒（预计 %s 完成）", seconds,
                         time.strftime("%m-%d %H:%M", time.localtime(finish)))
-        if not icons:
-            # 列表里没有在建建筑：清空记录，避免已完成建筑残留导致反复维护
-            store.set_buildings(name, [])
-        elif buildings:
+
+        if buildings:
             store.set_buildings(name, buildings)
             logger.info("账号 %s 在建建筑 %d 座", name, len(buildings))
+        else:
+            # 有秒表却一个都没读出来，多为识别失败；保留旧数据比写空更安全
+            logger.warning("账号 %s 有 %d 个在建行但时长识别失败，保留旧数据",
+                           name, len(icons))
 
-    def _find_rows(self, frame: np.ndarray) -> list[tuple[int, str]]:
+    def _read_workers(self, frame: np.ndarray) -> tuple[int, int] | None:
+        """读底部“建筑工人 x/y”胶囊，返回（剩余, 总数）。"""
+        shot, sx, sy = self._native_shot(frame)
+        x, y, w, h = self.WORKER_CHIP_ROI
+        return self.ctx.ocr.read_ratio(
+            shot, (int(x * sx), int(y * sy), int(w * sx), int(h * sy)))
+
+    def _army_all_done(self, frame: np.ndarray) -> bool:
+        """军队升级页是否已全部升满（这时不需要再做任何升级）。"""
+        if "chi_sim" not in getattr(self.ctx.ocr, "languages", set()):
+            return True
+        shot, sx, sy = self._native_shot(frame)
+        x, y, w, h = self.ARMY_DONE_ROI
+        text = self.ctx.ocr.read_text(
+            shot, (int(x * sx), int(y * sy), int(w * sx), int(h * sy)),
+            lang="chi_sim", scale=3, psm=6)
+        compact = "".join(text.split())
+        return "完成" in compact and "升级" in compact
+
+    def _try_army_upgrade(self) -> bool:
+        """切到“军队升级”标签页：全部升满就退出，否则点第一行尝试升级。
+
+        法术/兵种升级不占用建筑工人，所以建筑工人全忙时也要继续走这一步。
+        每次进菜单只试一次，避免来回切标签页。
+        """
+        flags = self.ctx.flags
+        if flags.get("upgrade_army_checked"):
+            return False
+        flags["upgrade_army_checked"] = True
+
+        self.ctx.actions.tap(*self.ARMY_TAB)
+        time.sleep(0.8)
+        frame = self.ctx.frames.get_latest()
+        if frame is None:
+            return False
+        if self._army_all_done(frame):
+            logger.info("军队升级页显示“已完成全部升级”，跳过")
+            return False
+
+        for y, kind in self._find_rows(frame, self.ARMY_ICON_ROI):
+            if kind == "gem":
+                continue
+            flags["upgrade_await_at"] = time.time()
+            logger.info("点击军队升级列表行 y=%d（%s）", y, kind)
+            self.ctx.actions.tap(self.ctx.config.upgrade.row_x, y)
+            return True
+        logger.info("军队升级页没有可点击的行")
+        return False
+
+    def _find_rows(self, frame: np.ndarray,
+                   roi: tuple[int, int, int, int] | None = None
+                   ) -> list[tuple[int, str]]:
         """按 y 从上到下返回列表中各行的货币图标位置与类型。"""
+        roi = roi or self.ICON_ROI
         rows: list[tuple[int, str]] = []
         for name, kind in self.CURRENCIES:
-            for m in self.ctx.matcher.match_all(frame, name, roi=self.ICON_ROI,
-                                                threshold=0.90):
+            for m in self.ctx.matcher.match_all(frame, name, roi=roi,
+                                                threshold=0.85):
                 rows.append((m.center[1], kind))
         rows.sort()
         return rows
+
+    def _native_shot(self, frame: np.ndarray) -> tuple[np.ndarray, float, float]:
+        """取一张设备原生分辨率截图：小字号时间/比例在视频流里会被压糊。"""
+        try:
+            raw = np.array(self.ctx.adb.device.screenshot())
+            shot = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
+        except Exception:
+            return frame, 1.0, 1.0
+        sy = shot.shape[0] / frame.shape[0]
+        sx = shot.shape[1] / frame.shape[1]
+        return shot, sx, sy
+
+    def _wait_state(self, state: GameState, timeout: float) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            frame = self.ctx.frames.get_latest()
+            if frame is not None:
+                if self.ctx.classifier.classify(frame).state == state:
+                    return True
+            time.sleep(0.3)
+        return False
 
     def _close_menu(self, frame: np.ndarray, now: float) -> bool:
         flags = self.ctx.flags
